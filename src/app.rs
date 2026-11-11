@@ -43,6 +43,16 @@ enum View {
     Settings,
 }
 
+/// A running "Download all" for one playlist.
+#[derive(Default)]
+struct Batch {
+    total: usize,
+    done: usize,
+    failed: usize,
+    /// Downloads started by this batch, by target key.
+    active: std::collections::HashSet<PathBuf>,
+}
+
 #[derive(PartialEq, Eq)]
 enum PlayState {
     Idle,
@@ -65,6 +75,12 @@ pub struct LocalPlaylist {
     downloads: HashMap<PathBuf, Arc<Download>>,
     /// "Download all" queue: (playlist id, track entry id).
     download_queue: std::collections::VecDeque<(String, String)>,
+    /// Progress of "Download all" per playlist id.
+    batches: HashMap<String, Batch>,
+    /// Last download error per target (`<playlist dir>/<key>`).
+    download_errors: HashMap<PathBuf, String>,
+    /// File stems present in each playlist folder (rescanned lazily).
+    on_disk: HashMap<PathBuf, std::collections::HashSet<String>>,
     /// Playlist whose folder should follow its (edited) name, and when it was last edited.
     pending_folder_rename: Option<(String, std::time::Instant)>,
 
@@ -230,6 +246,9 @@ impl LocalPlaylist {
             shuffle_order: Vec::new(),
             downloads: HashMap::new(),
             download_queue: Default::default(),
+            batches: HashMap::new(),
+            download_errors: HashMap::new(),
+            on_disk: HashMap::new(),
             pending_folder_rename: None,
             url_input,
             import_input,
@@ -312,7 +331,8 @@ impl LocalPlaylist {
             let (paths, root, limit) = (self.paths.clone(), self.music_root(), self.removed_limit());
             std::thread::spawn(move || storage::retire_playlist(&paths, &root, &p, limit));
         }
-        self.download_queue.retain(|(pid, _)| *pid != id);
+        self.stop_batch(&id, cx);
+        self.on_disk.clear();
         self.library.playlists.retain(|p| p.id != id);
         self.save();
         let next = self
@@ -336,6 +356,7 @@ impl LocalPlaylist {
             }
         }
         self.download_queue.retain(|(_, tid)| tid != track_id);
+        self.on_disk.clear();
         self.shuffle_order.retain(|t| t != track_id);
         self.save();
         cx.notify();
@@ -504,19 +525,21 @@ impl LocalPlaylist {
         }
         let tmp = dir.join(storage::DOWNLOADING_DIR).join(&key);
         let dl = Arc::new(Download::new(tmp.clone(), key.clone()));
+        self.download_errors.remove(&map_key);
         self.downloads.insert(map_key, dl.clone());
         let (ytdlp, track, dl2) = (self.ytdlp.clone(), track.clone(), dl.clone());
+        let cancel = dl.cancel.clone();
         let cookies = self.creds.get(track.platform).map(<[_]>::to_vec);
         std::thread::spawn(move || {
             let _ = std::fs::remove_dir_all(&tmp);
             let progress = |p: f32| dl2.set_progress(p);
             // Try anonymously first; only use the session if the content needs it.
-            let mut res = ytdlp.download(&track, &tmp, None, progress);
+            let mut res = ytdlp.download(&track, &tmp, None, Some(cancel.clone()), progress);
             if let (Err(e), Some(c)) = (&res, &cookies)
                 && ytdlp::needs_login(&format!("{e:#}"))
             {
                 let _ = std::fs::remove_dir_all(&tmp);
-                res = ytdlp.download(&track, &tmp, Some(c), progress);
+                res = ytdlp.download(&track, &tmp, Some(c), Some(cancel.clone()), progress);
             }
             // Move the finished file into the playlist folder.
             let res = res.and_then(|file| {
@@ -553,6 +576,7 @@ impl LocalPlaylist {
         if new_playlist || self.shuffle_order.is_empty() {
             self.reshuffle(track_id);
         }
+        self.on_disk.clear(); // the lookup may have restored or copied a file
         let input = match self.local_file(&playlist, &track) {
             Some(path) => AudioInput::File(path),
             None => AudioInput::Stream(self.ensure_download(&playlist, &track)),
@@ -586,6 +610,9 @@ impl LocalPlaylist {
                 queued += 1;
             }
         }
+        if queued > 0 {
+            self.batches.entry(playlist.id.clone()).or_default().total += queued;
+        }
         let msg = if queued == 0 {
             "All tracks are already downloaded".to_string()
         } else {
@@ -600,12 +627,65 @@ impl LocalPlaylist {
         const PARALLEL: usize = 2;
         while self.downloads.len() < PARALLEL {
             let Some((pid, tid)) = self.download_queue.pop_front() else { break };
+            let track = self.library.playlist(&pid).and_then(|p| p.tracks.iter().find(|t| t.id == tid).cloned());
             let Some(playlist) = self.library.playlist(&pid).cloned() else { continue };
-            let Some(track) = playlist.tracks.iter().find(|t| t.id == tid).cloned() else { continue };
+            let Some(track) = track else {
+                // Removed from the playlist meanwhile.
+                if let Some(b) = self.batches.get_mut(&pid) {
+                    b.total = b.total.saturating_sub(1);
+                }
+                continue;
+            };
             if self.local_file(&playlist, &track).is_none() {
                 self.ensure_download(&playlist, &track);
+                let key = storage::playlist_dir(&self.music_root(), &playlist).join(track.file_key());
+                self.batches.entry(pid).or_default().active.insert(key);
+            } else if let Some(b) = self.batches.get_mut(&pid) {
+                b.done += 1;
             }
         }
+    }
+
+    /// Stop a playlist's "Download all": drop queued tracks and cancel running
+    /// downloads (except the track that's playing right now).
+    fn stop_batch(&mut self, playlist_id: &str, cx: &mut Context<Self>) {
+        self.download_queue.retain(|(pid, _)| pid != playlist_id);
+        let current = self.current_download_key();
+        if let Some(batch) = self.batches.remove(playlist_id) {
+            for key in batch.active {
+                if Some(&key) != current.as_ref()
+                    && let Some(dl) = self.downloads.get(&key)
+                {
+                    dl.cancel();
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn current_download_key(&self) -> Option<PathBuf> {
+        let now = self.now.as_ref()?;
+        let playlist = self.library.playlist(&now.playlist_id)?;
+        Some(storage::playlist_dir(&self.music_root(), playlist).join(now.track.file_key()))
+    }
+
+    /// File stems in a playlist folder (cached; cleared when files change).
+    fn disk_keys(&mut self, dir: &std::path::Path) -> &std::collections::HashSet<String> {
+        self.on_disk.entry(dir.to_path_buf()).or_insert_with(|| {
+            std::fs::read_dir(dir)
+                .map(|it| {
+                    it.flatten()
+                        .filter_map(|e| {
+                            let p = e.path();
+                            let ext = p.extension()?.to_str()?;
+                            (p.is_file() && ytdlp::AUDIO_EXTS.contains(&ext))
+                                .then(|| p.file_stem()?.to_str().map(str::to_string))
+                                .flatten()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
     }
 
     /// Rename a playlist's folder to follow its name (debounced, skipped while downloading into it).
@@ -638,6 +718,7 @@ impl LocalPlaylist {
         if let Some(p) = self.library.playlist_mut(&id) {
             p.folder = Some(folder);
         }
+        self.on_disk.clear();
         self.save();
     }
 
@@ -781,10 +862,44 @@ impl LocalPlaylist {
             self.downloads.iter().filter_map(|(k, d)| d.result().map(|r| (k.clone(), r))).collect();
         for (key, result) in finished {
             self.downloads.remove(&key);
-            if let Err(e) = result {
-                eprintln!("download failed for {}: {e}", key.display());
+            if let Some(dir) = key.parent() {
+                self.on_disk.remove(dir);
+            }
+            let ok = result.is_ok();
+            match result {
+                Err(e) if e == crate::download::CANCELLED => {}
+                Err(e) => {
+                    eprintln!("download failed for {}: {e}", key.display());
+                    self.download_errors.insert(key.clone(), e);
+                }
+                Ok(_) => {}
+            }
+            for batch in self.batches.values_mut() {
+                if batch.active.remove(&key) {
+                    if ok { batch.done += 1 } else { batch.failed += 1 }
+                }
             }
             cx.notify();
+        }
+        // Finished batches.
+        let finished_batches: Vec<String> = self
+            .batches
+            .iter()
+            .filter(|(pid, b)| b.active.is_empty() && !self.download_queue.iter().any(|(q, _)| q == *pid))
+            .map(|(pid, _)| pid.clone())
+            .collect();
+        for pid in finished_batches {
+            let b = self.batches.remove(&pid).unwrap();
+            let name = self.library.playlist(&pid).map(|p| p.name.clone()).unwrap_or_default();
+            let note = if b.failed == 0 {
+                Notification::success(format!("\"{name}\": {} tracks downloaded", b.done))
+            } else {
+                Notification::warning(format!(
+                    "\"{name}\": {} downloaded, {} failed (hover the ⚠ icons for details)",
+                    b.done, b.failed
+                ))
+            };
+            window.push_notification(note, cx);
         }
         self.pump_queue();
         self.apply_folder_rename();
@@ -986,17 +1101,19 @@ impl LocalPlaylist {
         let total: u32 = playlist.tracks.iter().filter_map(|t| t.duration_secs).sum();
         let pid = playlist.id.clone();
         let playlist_id_for_dl = playlist.id.clone();
-        let queue_len = self.download_queue.iter().filter(|(p, _)| *p == playlist.id).count();
 
         let list = uniform_list(
             "tracks",
             count,
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                 let theme = cx.theme().clone();
+                let Some(dir) = this.selected_playlist().map(|p| storage::playlist_dir(&this.music_root(), p)) else {
+                    return Vec::new();
+                };
+                let on_disk = this.disk_keys(&dir).clone();
                 let Some(p) = this.selected_playlist() else { return Vec::new() };
                 let now_id = this.now.as_ref().map(|n| n.track.id.clone());
                 let loading = this.is_buffering();
-                let dir = storage::playlist_dir(&this.music_root(), p);
                 let paused = this.audio.as_ref().is_some_and(|a| a.is_paused());
                 range
                     .filter_map(|ix| p.tracks.get(ix).map(|t| (ix, t.clone())))
@@ -1044,14 +1161,38 @@ impl LocalPlaylist {
                                             .child(if t.artist.is_empty() { "—".to_string() } else { t.artist.clone() }),
                                     ),
                             )
-                            .when_some(progress.filter(|p| *p > 0.), |d, p| {
-                                d.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child(format!("{:.0}%", p * 100.)),
-                                )
-                            })
+                            .child(
+                                // Download status: progress, error, or on disk.
+                                div().w(px(36.)).flex_none().flex().justify_end().child(
+                                    if let Some(p) = progress {
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(format!("{:.0}%", p * 100.))
+                                            .into_any_element()
+                                    } else if let Some(err) = this.download_errors.get(&dir.join(t.file_key())).cloned() {
+                                        div()
+                                            .id(("dl-err", ix))
+                                            .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(format!("Download failed: {err}"))
+                                                    .build(window, cx)
+                                            })
+                                            .into_any_element()
+                                    } else if on_disk.contains(&t.file_key()) {
+                                        div()
+                                            .id(("dl-ok", ix))
+                                            .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
+                                            .tooltip(|window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new("Downloaded — plays offline")
+                                                    .build(window, cx)
+                                            })
+                                            .into_any_element()
+                                    } else {
+                                        div().into_any_element()
+                                    },
+                                ),
+                            )
                             .child(platform_badge(t.platform, &theme))
                             .child(
                                 div()
@@ -1142,21 +1283,7 @@ impl LocalPlaylist {
                                         }
                                     })),
                             )
-                            .child({
-                                let pid = playlist_id_for_dl.clone();
-                                Button::new("download-all")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::HardDriveDownload)
-                                    .tooltip(if queue_len > 0 {
-                                        format!("Downloading… {queue_len} queued")
-                                    } else {
-                                        "Download all tracks for offline playback".to_string()
-                                    })
-                                    .loading(queue_len > 0)
-                                    .disabled(count == 0)
-                                    .on_click(cx.listener(move |this, _, window, cx| this.download_all(&pid, window, cx)))
-                            })
+                            .child(self.render_download_all(&playlist_id_for_dl, count, cx))
                             .child(
                                 Button::new("delete-playlist")
                                     .small()
@@ -1225,6 +1352,58 @@ impl LocalPlaylist {
                         )
                     }),
             )
+            .into_any_element()
+    }
+
+    /// "Download all" button, or batch progress with a stop button while running.
+    fn render_download_all(&mut self, playlist_id: &str, count: usize, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let pid = playlist_id.to_string();
+        if let Some(b) = self.batches.get(playlist_id) {
+            let active: f32 = b.active.iter().filter_map(|k| self.downloads.get(k)).map(|d| d.progress()).sum();
+            let frac = ((b.done + b.failed) as f32 + active) / b.total.max(1) as f32;
+            return h_flex()
+                .gap_2()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(
+                    div()
+                        .w(px(120.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(theme.muted)
+                        .child(div().h_full().rounded_full().bg(theme.primary).w(relative(frac.clamp(0., 1.)))),
+                )
+                .child(format!("{}/{}", b.done + b.failed, b.total))
+                .when(b.failed > 0, |d| d.child(div().text_color(theme.warning).child(format!("{} failed", b.failed))))
+                .child(
+                    Button::new("stop-download")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::CircleStop)
+                        .tooltip("Stop downloading")
+                        .on_click(cx.listener(move |this, _, _, cx| this.stop_batch(&pid, cx))),
+                )
+                .into_any_element();
+        }
+        let target = self.library.playlist(playlist_id).map(|p| {
+            (storage::playlist_dir(&self.music_root(), p), p.tracks.iter().map(|t| t.file_key()).collect::<Vec<_>>())
+        });
+        let all_on_disk = target.is_some_and(|(dir, keys)| {
+            let on_disk = self.disk_keys(&dir);
+            !keys.is_empty() && keys.iter().all(|k| on_disk.contains(k))
+        });
+        Button::new("download-all")
+            .ghost()
+            .small()
+            .icon(if all_on_disk { IconName::CircleCheck } else { IconName::HardDriveDownload })
+            .tooltip(if all_on_disk {
+                "All tracks are downloaded"
+            } else {
+                "Download all tracks for offline playback"
+            })
+            .disabled(count == 0)
+            .on_click(cx.listener(move |this, _, window, cx| this.download_all(&pid, window, cx)))
             .into_any_element()
     }
 

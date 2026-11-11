@@ -649,6 +649,7 @@ impl LocalPlaylist {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.moving_music = false;
+                this.on_disk.clear();
                 let note = if errors.is_empty() {
                     Notification::success(format!("Music folder is now {}", new_root.display()))
                 } else {

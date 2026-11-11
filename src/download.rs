@@ -2,8 +2,8 @@
 //! streaming player).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::storage::find_file;
 
@@ -13,7 +13,11 @@ pub struct Download {
     /// Folder yt-dlp writes into while downloading.
     pub tmp_dir: PathBuf,
     pub key: String,
+    /// Set to stop the download (kills yt-dlp).
+    pub cancel: Arc<AtomicBool>,
 }
+
+pub const CANCELLED: &str = "cancelled";
 
 pub enum DlState {
     Running,
@@ -23,7 +27,7 @@ pub enum DlState {
 
 impl Download {
     pub fn new(tmp_dir: PathBuf, key: String) -> Self {
-        Self { progress: AtomicU32::new(0), result: Mutex::new(None), tmp_dir, key }
+        Self { progress: AtomicU32::new(0), result: Mutex::new(None), tmp_dir, key, cancel: Default::default() }
     }
 
     pub fn progress(&self) -> f32 {
@@ -33,6 +37,10 @@ impl Download {
     /// Monotonic: non-negative f32 bit patterns order like the floats.
     pub fn set_progress(&self, p: f32) {
         self.progress.fetch_max(p.max(0.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
     }
 
     pub fn finish(&self, r: Result<PathBuf, String>) {

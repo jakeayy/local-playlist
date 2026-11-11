@@ -655,7 +655,7 @@ mod tests {
             let (dl2, y2, t2) = (dl.clone(), y.clone(), t.clone());
             let start = Instant::now();
             std::thread::spawn(move || {
-                let r = y2.download(&t2, &tmp, None, |p| dl2.set_progress(p));
+                let r = y2.download(&t2, &tmp, None, None, |p| dl2.set_progress(p));
                 dl2.finish(r.map_err(|e| format!("{e:#}")));
             });
             audio.load(Input::Stream(dl.clone()));

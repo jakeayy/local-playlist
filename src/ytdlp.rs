@@ -246,6 +246,7 @@ impl YtDlp {
         track: &Track,
         dir: &Path,
         cookies: Option<&[StoredCookie]>,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         progress: impl Fn(f32),
     ) -> Result<PathBuf> {
         std::fs::create_dir_all(dir)?;
@@ -273,13 +274,32 @@ impl YtDlp {
 
         let mut child = cmd.spawn().context("failed to start yt-dlp")?;
         let stderr = child.stderr.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        // Watch the cancel flag and kill yt-dlp when it's set.
+        let child = std::sync::Arc::new(std::sync::Mutex::new(child));
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(cancel) = cancel {
+            use std::sync::atomic::Ordering::SeqCst;
+            let (child, finished, cancelled) = (child.clone(), finished.clone(), cancelled.clone());
+            std::thread::spawn(move || {
+                while !finished.load(SeqCst) {
+                    if cancel.load(SeqCst) {
+                        cancelled.store(true, SeqCst);
+                        let _ = child.lock().unwrap().kill();
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            });
+        }
         let err_thread = std::thread::spawn(move || {
             let mut s = String::new();
             let _ = BufReader::new(stderr).read_to_string(&mut s);
             s
         });
         let mut file = None;
-        for line in BufReader::new(child.stdout.take().unwrap()).lines() {
+        for line in BufReader::new(stdout).lines() {
             let line = line?;
             if let Some(p) = line.strip_prefix("LPPROGRESS") {
                 if let Ok(pct) = p.trim().trim_end_matches('%').trim().parse::<f32>() {
@@ -289,9 +309,13 @@ impl YtDlp {
                 file = Some(PathBuf::from(f.trim()));
             }
         }
-        let status = child.wait()?;
+        let status = child.lock().unwrap().wait()?;
+        finished.store(true, std::sync::atomic::Ordering::SeqCst);
         let stderr = err_thread.join().unwrap_or_default();
         drop(cookie_file);
+        if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            bail!("{}", crate::download::CANCELLED);
+        }
         if !status.success() {
             bail!("{}", last_error(&stderr));
         }
@@ -740,7 +764,7 @@ mod tests {
                 let _ = std::fs::remove_file(f);
             }
             let start = std::time::Instant::now();
-            let f = y.download(&t, &out, None, |_| {}).unwrap();
+            let f = y.download(&t, &out, None, None, |_| {}).unwrap();
             println!("{} in {:?}", f.display(), start.elapsed());
             use rodio::Source as _;
             let d = rodio::Decoder::try_from(std::fs::File::open(&f).unwrap()).unwrap();
