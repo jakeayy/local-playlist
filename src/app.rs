@@ -497,7 +497,10 @@ impl LocalPlaylist {
         let (ytdlp, dir, track, dl2) = (self.ytdlp.clone(), self.paths.audio_cache(), track.clone(), dl.clone());
         std::thread::spawn(move || {
             let res = ytdlp
-                .download(&track, &dir, |p| dl2.progress.store(p.to_bits(), Ordering::Relaxed))
+                .download(&track, &dir, |p| {
+                    // Non-negative f32 bit patterns order like the floats, so fetch_max keeps progress monotonic.
+                    dl2.progress.fetch_max(p.to_bits(), Ordering::Relaxed);
+                })
                 .map_err(|e| format!("{e:#}"));
             *dl2.result.lock().unwrap() = Some(res);
         });
@@ -928,6 +931,7 @@ impl LocalPlaylist {
                         let progress = this.downloads.get(&t.cache_key()).map(|d| d.progress());
                         h_flex()
                             .id(ix)
+                            .w_full()
                             .h(px(48.))
                             .px_3()
                             .gap_3()

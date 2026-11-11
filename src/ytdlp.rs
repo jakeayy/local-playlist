@@ -128,7 +128,7 @@ impl YtDlp {
         std::fs::create_dir_all(dir)?;
         let template = dir.join(format!("{}.%(ext)s", track.cache_key()));
         let mut cmd = self.command()?;
-        cmd.args(["--no-playlist", "--no-mtime", "--progress", "--newline"])
+        cmd.args(["--no-playlist", "--no-mtime", "--progress", "--newline", "-N", "4"])
             .args(["-f", FORMAT])
             .args(["--progress-template", "download:LPPROGRESS %(progress._percent_str)s"])
             .args(["--print", "after_move:LPFILE %(filepath)s"])
@@ -382,5 +382,29 @@ mod tests {
         let toml = "dependencies = [\n  \"yt-dlp-ejs==0.8.0\",\n]";
         assert_eq!(pinned_ejs_version(toml).as_deref(), Some("0.8.0"));
         assert_eq!(pinned_ejs_version("nothing"), None);
+    }
+
+    #[test]
+    #[ignore = "network; downloads yt-dlp and audio"]
+    fn live_update_download_decode() {
+        use crate::model::Platform;
+        let dir = std::env::temp_dir().join("local-playlist-ytdlp-test");
+        let paths = Paths { data: dir.join("data"), cache: dir.join("cache") };
+        let y = YtDlp::new(&paths);
+        let r = y.update(|s| println!("{s}")).unwrap();
+        println!("update -> {r:?}; installed {:?}", y.installed());
+        assert!(matches!(y.backend(), Backend::Managed(_)));
+        for (platform, id, url) in [
+            (Platform::YouTube, "jNQXAC9IVRw", "https://www.youtube.com/watch?v=jNQXAC9IVRw"),
+            (Platform::SoundCloud, "293", "https://soundcloud.com/forss/flickermood"),
+        ] {
+            let t = Track::new(platform, id, url, "t", "a", None);
+            let f = y.download(&t, &paths.audio_cache(), |p| print!("{:.0}% ", p * 100.)).unwrap();
+            println!("\n{}", f.display());
+            use rodio::Source as _;
+            let d = rodio::Decoder::try_from(std::fs::File::open(&f).unwrap()).unwrap();
+            println!("duration {:?} rate {:?} ch {:?}", d.total_duration(), d.sample_rate(), d.channels());
+            assert!(d.total_duration().is_some());
+        }
     }
 }
