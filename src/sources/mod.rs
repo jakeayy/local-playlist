@@ -14,6 +14,7 @@ use anyhow::{Result, bail};
 use url::Url;
 
 use crate::model::{Paths, Platform, Track};
+use crate::secrets::{Credentials, find};
 use crate::ytdlp::YtDlp;
 
 /// A parsed, supported link.
@@ -27,6 +28,8 @@ pub enum Link {
     SoundCloudUser { user_url: String },
     /// SoundCloud short link (on.soundcloud.com) which must be expanded first.
     SoundCloudShort { url: String },
+    /// The logged-in user's own likes.
+    SoundCloudMyLikes,
 }
 
 impl Link {
@@ -44,6 +47,7 @@ impl Link {
                 | Link::SoundCloudSet { .. }
                 | Link::SoundCloudLikes { .. }
                 | Link::SoundCloudUser { .. }
+                | Link::SoundCloudMyLikes
         )
     }
 }
@@ -160,29 +164,47 @@ pub fn http() -> &'static ureq::Agent {
 /// Resolve a link to track(s). `as_collection` decides whether a YouTube watch
 /// link that carries a `list=` parameter is treated as the whole playlist.
 /// Blocking: run on a background thread.
-pub fn resolve(link: &Link, as_collection: bool, paths: &Paths, ytdlp: &YtDlp) -> Result<Resolved> {
+pub fn resolve(
+    link: &Link,
+    as_collection: bool,
+    paths: &Paths,
+    ytdlp: &YtDlp,
+    creds: &Credentials,
+) -> Result<Resolved> {
+    let yt_auth = creds.get(Platform::YouTube);
+    let sc_auth = creds.get(Platform::SoundCloud).and_then(|c| find(c, "oauth_token"));
     let native = match link {
         Link::YouTubeVideo { list: Some(list), .. } if as_collection => {
-            youtube::playlist(list).map(collection)
+            youtube::playlist(list, yt_auth).map(collection)
         }
         Link::YouTubeVideo { id, .. } => youtube::video(id).map(Resolved::Track),
-        Link::YouTubePlaylist { list } => youtube::playlist(list).map(collection),
+        Link::YouTubePlaylist { list } => youtube::playlist(list, yt_auth).map(collection),
         Link::SoundCloudShort { url } => {
             let expanded = soundcloud::expand_short_link(url)?;
             let link = parse_link(&expanded)?;
             if matches!(link, Link::SoundCloudShort { .. }) {
                 bail!("Could not expand SoundCloud short link");
             }
-            return resolve(&link, as_collection, paths, ytdlp);
+            return resolve(&link, as_collection, paths, ytdlp, creds);
         }
-        other => soundcloud::resolve(other, paths),
+        other => soundcloud::resolve(other, paths, sc_auth),
     };
 
     match native {
         Ok(r) => Ok(r),
+        // Login-required lists have nothing to gain from the fallback.
+        Err(err) if matches!(link, Link::SoundCloudMyLikes)
+            || matches!(link, Link::YouTubePlaylist { list } if youtube::is_personal_list(list) && yt_auth.is_none()) =>
+        {
+            Err(err)
+        }
         Err(err) => {
             eprintln!("native resolve failed for {link:?}: {err:#}; trying yt-dlp");
-            ytdlp_fallback(link, as_collection, ytdlp).map_err(|e2| {
+            let cookies = match link.platform() {
+                Platform::YouTube => yt_auth,
+                Platform::SoundCloud => creds.get(Platform::SoundCloud),
+            };
+            ytdlp_fallback(link, as_collection, ytdlp, cookies).map_err(|e2| {
                 anyhow::anyhow!("{err:#}\n(yt-dlp fallback also failed: {e2:#})")
             })
         }
@@ -193,7 +215,12 @@ fn collection((title, tracks): (String, Vec<Track>)) -> Resolved {
     Resolved::Collection { title, tracks }
 }
 
-fn ytdlp_fallback(link: &Link, as_collection: bool, ytdlp: &YtDlp) -> Result<Resolved> {
+fn ytdlp_fallback(
+    link: &Link,
+    as_collection: bool,
+    ytdlp: &YtDlp,
+    cookies: Option<&[crate::secrets::StoredCookie]>,
+) -> Result<Resolved> {
     let url = match link {
         Link::YouTubeVideo { list: Some(list), .. } if as_collection => {
             format!("https://www.youtube.com/playlist?list={list}")
@@ -204,8 +231,9 @@ fn ytdlp_fallback(link: &Link, as_collection: bool, ytdlp: &YtDlp) -> Result<Res
         Link::SoundCloudLikes { user_url } => format!("{user_url}/likes"),
         Link::SoundCloudUser { user_url } => format!("{user_url}/tracks"),
         Link::SoundCloudShort { url } => url.clone(),
+        Link::SoundCloudMyLikes => bail!("not supported"),
     };
-    let info = ytdlp.extract_info(&url)?;
+    let info = ytdlp.extract_info(&url, cookies)?;
     let platform = link.platform();
     if let Some(entries) = info.get("entries").and_then(|e| e.as_array()) {
         let title = info["title"].as_str().unwrap_or("Imported playlist").to_string();

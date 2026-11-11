@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use super::http;
 use crate::model::{Platform, Track};
+use crate::secrets::{StoredCookie, cookie_header, find};
 
 const INNERTUBE: &str = "https://www.youtube.com/youtubei/v1";
 const CLIENT_VERSION: &str = "2.20251105.01.00";
@@ -20,17 +21,54 @@ pub fn watch_url(id: &str) -> String {
     format!("https://www.youtube.com/watch?v={id}")
 }
 
-fn innertube(endpoint: &str, mut body: Value) -> Result<Value> {
+/// Lists that only exist for a logged-in user.
+pub fn is_personal_list(list: &str) -> bool {
+    matches!(list, "LL" | "LM" | "WL")
+}
+
+/// `Authorization` value YouTube's web client sends for cookie sessions:
+/// SHA-1 of "<timestamp> <SAPISID> <origin>" (same scheme as yt-dlp).
+fn sapisid_hash(cookies: &[StoredCookie]) -> Option<String> {
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let hash = |secret: &str| {
+        let digest = sha1_smol::Sha1::from(format!("{ts} {secret} {ORIGIN}")).digest().to_string();
+        format!("{ts}_{digest}")
+    };
+    let mut parts = Vec::new();
+    if let Some(s) = find(cookies, "SAPISID").or(find(cookies, "__Secure-3PAPISID")) {
+        parts.push(format!("SAPISIDHASH {}", hash(s)));
+    }
+    if let Some(s) = find(cookies, "__Secure-1PAPISID") {
+        parts.push(format!("SAPISID1PHASH {}", hash(s)));
+    }
+    if let Some(s) = find(cookies, "__Secure-3PAPISID") {
+        parts.push(format!("SAPISID3PHASH {}", hash(s)));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+const ORIGIN: &str = "https://www.youtube.com";
+
+fn innertube(endpoint: &str, mut body: Value, auth: Option<&[StoredCookie]>) -> Result<Value> {
     body["context"] = json!({
         "client": { "clientName": "WEB", "clientVersion": CLIENT_VERSION, "hl": "en", "gl": "US" }
     });
-    let mut resp = http()
+    let mut req = http()
         .post(format!("{INNERTUBE}/{endpoint}?prettyPrint=false"))
         .header("Content-Type", "application/json")
         .header("X-YouTube-Client-Name", "1")
         .header("X-YouTube-Client-Version", CLIENT_VERSION)
-        .header("Origin", "https://www.youtube.com")
-        .send_json(&body)?;
+        .header("Origin", ORIGIN);
+    if let Some(cookies) = auth {
+        req = req
+            .header("Cookie", cookie_header(cookies, "www.youtube.com"))
+            .header("X-Origin", ORIGIN)
+            .header("X-Goog-AuthUser", "0");
+        if let Some(h) = sapisid_hash(cookies) {
+            req = req.header("Authorization", h);
+        }
+    }
+    let mut resp = req.send_json(&body)?;
     if !resp.status().is_success() {
         bail!("YouTube returned HTTP {}", resp.status());
     }
@@ -49,7 +87,7 @@ pub fn video(id: &str) -> Result<Track> {
 }
 
 fn video_innertube(id: &str) -> Result<Track> {
-    let resp = innertube("player", json!({ "videoId": id }))?;
+    let resp = innertube("player", json!({ "videoId": id }), None)?;
     let details = resp.get("videoDetails").context("no videoDetails in response")?;
     let title = details["title"].as_str().context("no title")?.to_string();
     let artist = details["author"].as_str().unwrap_or_default().trim_end_matches(" - Topic").to_string();
@@ -69,10 +107,38 @@ fn video_oembed(id: &str) -> Result<Track> {
     Ok(Track::new(Platform::YouTube, id, watch_url(id), title, artist, None))
 }
 
-/// Fetch a public/unlisted playlist: (title, tracks).
-pub fn playlist(list: &str) -> Result<(String, Vec<Track>)> {
-    let browse_id = if list.starts_with("VL") { list.to_string() } else { format!("VL{list}") };
-    let first = innertube("browse", json!({ "browseId": browse_id }))?;
+/// Fetch a playlist: (title, tracks). Public/unlisted playlists are read
+/// anonymously; the session (if any) is only used for personal lists or when
+/// the anonymous request fails (e.g. a private playlist).
+pub fn playlist(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, Vec<Track>)> {
+    let list = list.strip_prefix("VL").unwrap_or(list);
+    if is_personal_list(list) {
+        let Some(auth) = auth else {
+            bail!("Log in to YouTube (sidebar → Accounts) to import your {}", personal_list_name(list));
+        };
+        let (title, tracks) = playlist_with(list, Some(auth))?;
+        let title = if title == "YouTube playlist" { personal_list_name(list).to_string() } else { title };
+        return Ok((title, tracks));
+    }
+    match playlist_with(list, None) {
+        Ok(r) => Ok(r),
+        Err(e) if auth.is_some() => playlist_with(list, auth).map_err(|_| e),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn personal_list_name(list: &str) -> &'static str {
+    match list {
+        "LL" => "Liked videos",
+        "LM" => "Liked music",
+        "WL" => "Watch later",
+        _ => "playlist",
+    }
+}
+
+fn playlist_with(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, Vec<Track>)> {
+    let browse_id = format!("VL{list}");
+    let first = innertube("browse", json!({ "browseId": browse_id }), auth)?;
 
     if let Some(alert) = find_alert(&first) {
         bail!("YouTube: {alert}");
@@ -94,7 +160,7 @@ pub fn playlist(list: &str) -> Result<(String, Vec<Track>)> {
         if tracks.len() >= MAX_ITEMS {
             break;
         }
-        let page = innertube("browse", json!({ "continuation": t }))?;
+        let page = innertube("browse", json!({ "continuation": t }), auth)?;
         let before = tracks.len();
         token = collect_page(page.get("onResponseReceivedActions").unwrap_or(&Value::Null), &mut tracks);
         if tracks.len() == before {
@@ -245,6 +311,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn auth_header() {
+        let cookies = crate::secrets::parse_cookies("SAPISID=abc; __Secure-3PAPISID=def", crate::model::Platform::YouTube).unwrap();
+        let h = sapisid_hash(&cookies).unwrap();
+        assert!(h.starts_with("SAPISIDHASH ") && h.contains(" SAPISID3PHASH "), "{h}");
+        assert!(playlist("LL", None).is_err());
+    }
+
+    #[test]
     fn clock() {
         assert_eq!(parse_clock("3:55"), Some(235));
         assert_eq!(parse_clock("1:02:03"), Some(3723));
@@ -255,7 +329,7 @@ mod tests {
     #[test]
     #[ignore = "network"]
     fn live_playlist() {
-        let (title, tracks) = playlist("PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI").unwrap();
+        let (title, tracks) = playlist("PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI", None).unwrap();
         println!("{title}: {} tracks; first {:?}", tracks.len(), tracks.first());
         assert!(tracks.len() > 100, "pagination should fetch more than one page");
     }

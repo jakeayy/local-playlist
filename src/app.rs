@@ -1,5 +1,7 @@
 //! Main window: sidebar with playlists, track list, and player bar.
 
+mod settings;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -20,8 +22,10 @@ use gpui_kit::*;
 
 use crate::audio::Audio;
 use crate::model::{Library, Paths, Platform, Playlist, RepeatMode, Track, format_duration};
-use crate::sources::{self, Resolved};
-use crate::ytdlp::{self, Backend, YtDlp};
+use crate::secrets::{Credentials, KeyStorage, SecretStore};
+use crate::sources::{self, Link, Resolved};
+use crate::ytdlp::{self, Component, State, Status, YtDlp};
+use gpui_kit::component::input::TextareaState;
 
 /// Shared state of one background audio download.
 struct Download {
@@ -39,6 +43,12 @@ impl Download {
 struct NowPlaying {
     playlist_id: String,
     track: Track,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Playlist,
+    Settings,
 }
 
 enum PlayState {
@@ -70,8 +80,16 @@ pub struct LocalPlaylist {
 
     adding: bool,
     importing: bool,
-    backend: Option<Backend>,
-    ytdlp_status: Option<String>,
+    view: View,
+    components: Option<Status>,
+    /// Status text and progress of a running component install.
+    installing: Option<Arc<Mutex<(String, Option<f32>)>>>,
+    creds: Credentials,
+    key_storage: Option<KeyStorage>,
+    logging_in: Option<Platform>,
+    /// Platform whose "paste cookies" editor is open.
+    cookie_target: Option<Platform>,
+    cookie_input: Entity<TextareaState>,
     confirm_delete: bool,
     pending_notes: Vec<Notification>,
 
@@ -97,6 +115,16 @@ impl LocalPlaylist {
             }
         };
 
+        let (creds, key_storage) = match SecretStore::new(&paths).load() {
+            Ok(r) => r,
+            Err(e) => {
+                pending_notes.push(Notification::error(format!(
+                    "{e:#}. Log in again from Settings → Accounts."
+                )));
+                (Credentials::default(), None)
+            }
+        };
+
         let audio = match Audio::new(library.settings.volume) {
             Ok(a) => Some(a),
             Err(e) => {
@@ -111,6 +139,10 @@ impl LocalPlaylist {
         let import_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL"));
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name"));
+        let cookie_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Paste a Netscape cookies.txt export, or a Cookie header (name=value; name2=value2)")
+        });
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001).default_value(0.));
         let volume = cx.new(|_| {
             SliderState::new().min(0.).max(1.).step(0.01).default_value(library.settings.volume)
@@ -179,7 +211,7 @@ impl LocalPlaylist {
 
         let selected = library.playlists.first().map(|p| p.id.clone());
         let mut this = Self {
-            ytdlp: YtDlp::new(&paths),
+            ytdlp: YtDlp::new(&paths, library.settings.ytdlp_source, library.settings.js_source),
             paths,
             library,
             selected: None,
@@ -196,8 +228,14 @@ impl LocalPlaylist {
             seeking: None,
             adding: false,
             importing: false,
-            backend: None,
-            ytdlp_status: None,
+            view: View::Playlist,
+            components: None,
+            installing: None,
+            creds,
+            key_storage,
+            logging_in: None,
+            cookie_target: None,
+            cookie_input,
             confirm_delete: false,
             pending_notes,
             list_scroll: UniformListScrollHandle::new(),
@@ -205,7 +243,7 @@ impl LocalPlaylist {
             _ticker: ticker,
         };
         this.select(selected, window, cx);
-        this.refresh_backend(cx);
+        this.refresh_components(cx);
         this
     }
 
@@ -226,6 +264,7 @@ impl LocalPlaylist {
     }
 
     fn select(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.view = View::Playlist;
         self.selected = id;
         self.confirm_delete = false;
         let name = self.selected_playlist().map(|p| p.name.clone()).unwrap_or_default();
@@ -309,11 +348,11 @@ impl LocalPlaylist {
         self.adding = true;
         cx.notify();
 
-        let (paths, ytdlp) = (self.paths.clone(), self.ytdlp.clone());
+        let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
         let as_collection = link.is_collection();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
-                .background_spawn(async move { sources::resolve(&link, as_collection, &paths, &ytdlp) })
+                .background_spawn(async move { sources::resolve(&link, as_collection, &paths, &ytdlp, &creds) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.adding = false;
@@ -359,12 +398,20 @@ impl LocalPlaylist {
             );
             return;
         }
+        self.import_link(link, true, window, cx);
+    }
+
+    /// Import a collection link as a new playlist.
+    fn import_link(&mut self, link: Link, clear_input: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.importing {
+            return;
+        }
         self.importing = true;
         cx.notify();
-        let (paths, ytdlp) = (self.paths.clone(), self.ytdlp.clone());
+        let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
-                .background_spawn(async move { sources::resolve(&link, true, &paths, &ytdlp) })
+                .background_spawn(async move { sources::resolve(&link, true, &paths, &ytdlp, &creds) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.importing = false;
@@ -376,7 +423,9 @@ impl LocalPlaylist {
                         let id = playlist.id.clone();
                         this.library.playlists.push(playlist);
                         this.save();
-                        this.import_input.update(cx, |i, cx| i.set_value("", window, cx));
+                        if clear_input {
+                            this.import_input.update(cx, |i, cx| i.set_value("", window, cx));
+                        }
                         this.select(Some(id), window, cx);
                         window.push_notification(Notification::success(format!("Imported {n} tracks")), cx);
                     }
@@ -393,75 +442,6 @@ impl LocalPlaylist {
     }
 
     // ------------------------------------------------------------- yt-dlp
-
-    fn refresh_backend(&mut self, cx: &mut Context<Self>) {
-        let ytdlp = self.ytdlp.clone();
-        cx.spawn(async move |this, cx| {
-            let backend = cx.background_spawn(async move { ytdlp.backend() }).await;
-            let _ = this.update(cx, |this, cx| {
-                this.backend = Some(backend);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn update_ytdlp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ytdlp_status.is_some() {
-            return;
-        }
-        self.ytdlp_status = Some("Starting update…".into());
-        cx.notify();
-        let ytdlp = self.ytdlp.clone();
-        let status = Arc::new(Mutex::new(String::new()));
-        let status_bg = status.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let task = cx.background_spawn(async move {
-                ytdlp.update(|s| *status_bg.lock().unwrap() = s.to_string())
-            });
-            // Mirror status text while the update runs.
-            let poll_status = status.clone();
-            let this2 = this.clone();
-            let mut cx2 = cx.clone();
-            let poller = cx.spawn(async move |_| loop {
-                cx2.background_executor().timer(Duration::from_millis(150)).await;
-                let s = poll_status.lock().unwrap().clone();
-                if this2
-                    .update(&mut cx2, |this, cx| {
-                        if this.ytdlp_status.is_some() && !s.is_empty() {
-                            this.ytdlp_status = Some(s);
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            });
-            let result = task.await;
-            drop(poller);
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.ytdlp_status = None;
-                match result {
-                    Ok(Some(info)) => window.push_notification(
-                        Notification::success(format!("yt-dlp updated to {}", info.short())),
-                        cx,
-                    ),
-                    Ok(None) => window.push_notification(
-                        Notification::info("yt-dlp is already at the latest commit"),
-                        cx,
-                    ),
-                    Err(e) => window.push_notification(
-                        Notification::error(format!("yt-dlp update failed: {e:#}")),
-                        cx,
-                    ),
-                }
-                this.refresh_backend(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
 
     fn clear_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.paths.audio_cache();
@@ -495,14 +475,20 @@ impl LocalPlaylist {
         let dl = Arc::new(Download { progress: AtomicU32::new(0), result: Mutex::new(None) });
         self.downloads.insert(key, dl.clone());
         let (ytdlp, dir, track, dl2) = (self.ytdlp.clone(), self.paths.audio_cache(), track.clone(), dl.clone());
+        let cookies = self.creds.get(track.platform).map(<[_]>::to_vec);
         std::thread::spawn(move || {
-            let res = ytdlp
-                .download(&track, &dir, |p| {
-                    // Non-negative f32 bit patterns order like the floats, so fetch_max keeps progress monotonic.
-                    dl2.progress.fetch_max(p.to_bits(), Ordering::Relaxed);
-                })
-                .map_err(|e| format!("{e:#}"));
-            *dl2.result.lock().unwrap() = Some(res);
+            // Non-negative f32 bit patterns order like the floats, so fetch_max keeps progress monotonic.
+            let progress = |p: f32| {
+                dl2.progress.fetch_max(p.to_bits(), Ordering::Relaxed);
+            };
+            // Try anonymously first; only use the session if the content needs it.
+            let mut res = ytdlp.download(&track, &dir, None, progress);
+            if let (Err(e), Some(c)) = (&res, &cookies)
+                && ytdlp::needs_login(&format!("{e:#}"))
+            {
+                res = ytdlp.download(&track, &dir, Some(c), progress);
+            }
+            *dl2.result.lock().unwrap() = Some(res.map_err(|e| format!("{e:#}")));
         });
         dl
     }
@@ -685,6 +671,9 @@ impl LocalPlaylist {
         for note in self.pending_notes.drain(..) {
             window.push_notification(note, cx);
         }
+        if self.installing.is_some() {
+            cx.notify();
+        }
 
         // Collect finished downloads.
         let finished: Vec<(String, Result<PathBuf, String>)> = self
@@ -772,12 +761,9 @@ impl LocalPlaylist {
                 .on_click(cx.listener(move |this, _, window, cx| this.select(Some(id.clone()), window, cx)))
         });
 
-        let backend_label: SharedString = match &self.backend {
-            None => "yt-dlp: checking…".into(),
-            Some(Backend::Managed(i)) => format!("yt-dlp {}", i.short()).into(),
-            Some(Backend::System(v)) => format!("yt-dlp {v} (system)").into(),
-            Some(Backend::Missing) => "yt-dlp not installed".into(),
-        };
+        let components_label = self.components_label();
+        let setup_needed = self.setup_needed();
+        let settings_open = self.view == View::Settings;
 
         v_flex()
             .w(px(260.))
@@ -847,7 +833,7 @@ impl LocalPlaylist {
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child("YouTube playlists, SoundCloud sets, profiles and /likes. No login needed."),
+                            .child("YouTube playlists, SoundCloud sets, profiles and /likes. Private lists need a login (Settings)."),
                     ),
             )
             .child(
@@ -857,33 +843,23 @@ impl LocalPlaylist {
                     .border_t_1()
                     .border_color(theme.sidebar_border)
                     .child(
-                        div()
+                        h_flex()
+                            .gap_1()
                             .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(self.ytdlp_status.clone().map(SharedString::from).unwrap_or(backend_label)),
+                            .text_color(if setup_needed { theme.warning } else { theme.muted_foreground })
+                            .when(setup_needed, |d| d.child(Icon::new(IconName::CircleAlert).xsmall()))
+                            .child(div().truncate().child(components_label)),
                     )
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("update-ytdlp")
-                                    .small()
-                                    .flex_1()
-                                    .icon(IconName::RefreshCw)
-                                    .label("Update yt-dlp")
-                                    .loading(self.ytdlp_status.is_some())
-                                    .tooltip("Download the latest yt-dlp commit from GitHub")
-                                    .on_click(cx.listener(|this, _, window, cx| this.update_ytdlp(window, cx))),
-                            )
-                            .child(
-                                Button::new("clear-cache")
-                                    .small()
-                                    .ghost()
-                                    .icon(IconName::Trash)
-                                    .tooltip("Clear downloaded audio cache")
-                                    .on_click(cx.listener(|this, _, window, cx| this.clear_cache(window, cx))),
-                            ),
+                        Button::new("open-settings")
+                            .small()
+                            .when(settings_open, |b| b.primary())
+                            .icon(IconName::Settings)
+                            .label("Settings & accounts")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.view = if this.view == View::Settings { View::Playlist } else { View::Settings };
+                                cx.notify();
+                            })),
                     ),
             )
     }
@@ -1304,7 +1280,17 @@ impl Render for LocalPlaylist {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_sidebar(window, cx))
-                    .child(self.render_main(window, cx)),
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
+                            .child(div().flex_1().min_h_0().child(match self.view {
+                                View::Playlist => self.render_main(window, cx).into_any_element(),
+                                View::Settings => self.render_settings(window, cx).into_any_element(),
+                            })),
+                    ),
             )
             .child(self.render_player(window, cx))
     }

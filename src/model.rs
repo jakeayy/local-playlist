@@ -98,13 +98,21 @@ pub struct Settings {
     pub volume: f32,
     pub shuffle: bool,
     pub repeat: RepeatMode,
-    /// Keep downloaded audio on disk so tracks play instantly next time.
-    pub keep_audio_cache: bool,
+    /// Use the app-managed yt-dlp build, or the one on PATH.
+    pub ytdlp_source: crate::ytdlp::Source,
+    /// Use the app-managed QuickJS, or JavaScript runtimes on PATH.
+    pub js_source: crate::ytdlp::Source,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: RepeatMode::Off, keep_audio_cache: true }
+        Self {
+            volume: 0.8,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            ytdlp_source: Default::default(),
+            js_source: Default::default(),
+        }
     }
 }
 
@@ -187,10 +195,6 @@ impl Paths {
 
     pub fn library_file(&self) -> PathBuf {
         self.data.join("library.json")
-    }
-
-    pub fn ytdlp_dir(&self) -> PathBuf {
-        self.data.join("yt-dlp")
     }
 
     pub fn audio_cache(&self) -> PathBuf {

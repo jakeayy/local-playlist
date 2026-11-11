@@ -19,39 +19,57 @@ const MAX_ITEMS: usize = 10_000;
 
 static CLIENT_ID: Mutex<Option<String>> = Mutex::new(None);
 
-pub fn resolve(link: &Link, paths: &Paths) -> Result<Resolved> {
+/// Resolve a SoundCloud link. `oauth` (the session's `oauth_token`) is only
+/// sent for "my likes" or when the anonymous request fails (private content).
+pub fn resolve(link: &Link, paths: &Paths, oauth: Option<&str>) -> Result<Resolved> {
+    if matches!(link, Link::SoundCloudMyLikes) {
+        let Some(token) = oauth else { bail!("Log in to SoundCloud (sidebar → Accounts) to import your likes") };
+        let me = api_get(&format!("{API}/me"), paths, Some(token))?;
+        let (id, _) = user_info(&me)?;
+        let first = format!("{API}/users/{id}/likes?limit=200&linked_partitioning=1");
+        let tracks = paginate(&first, paths, Some(token), |item| item.get("track").and_then(track_from_json))?;
+        return Ok(Resolved::Collection { title: "My SoundCloud likes".into(), tracks });
+    }
+    match resolve_with(link, paths, None) {
+        Ok(r) => Ok(r),
+        Err(e) if oauth.is_some() => resolve_with(link, paths, oauth).map_err(|_| e),
+        Err(e) => Err(e),
+    }
+}
+
+fn resolve_with(link: &Link, paths: &Paths, auth: Option<&str>) -> Result<Resolved> {
     match link {
         Link::SoundCloudTrack { url } => {
-            let v = api_resolve(url, paths)?;
+            let v = api_resolve(url, paths, auth)?;
             if v["kind"].as_str() != Some("track") {
                 bail!("That SoundCloud link is not a track");
             }
             Ok(Resolved::Track(track_from_json(&v).context("Track has no usable metadata")?))
         }
         Link::SoundCloudSet { url } => {
-            let v = api_resolve(url, paths)?;
+            let v = api_resolve(url, paths, auth)?;
             if v["kind"].as_str() != Some("playlist") {
                 bail!("That SoundCloud link is not a playlist/album");
             }
             let title = v["title"].as_str().unwrap_or("SoundCloud set").to_string();
-            let tracks = playlist_tracks(&v, paths)?;
+            let tracks = playlist_tracks(&v, paths, auth)?;
             Ok(Resolved::Collection { title, tracks })
         }
         Link::SoundCloudLikes { user_url } => {
-            let user = api_resolve(user_url, paths)?;
+            let user = api_resolve(user_url, paths, auth)?;
             let (id, name) = user_info(&user)?;
             let first = format!("{API}/users/{id}/likes?limit=200&linked_partitioning=1");
-            let tracks = paginate(&first, paths, |item| {
+            let tracks = paginate(&first, paths, auth, |item| {
                 // Likes contain both tracks and playlists; we take tracks.
                 item.get("track").and_then(track_from_json)
             })?;
             Ok(Resolved::Collection { title: format!("{name} — Likes"), tracks })
         }
         Link::SoundCloudUser { user_url } => {
-            let user = api_resolve(user_url, paths)?;
+            let user = api_resolve(user_url, paths, auth)?;
             let (id, name) = user_info(&user)?;
             let first = format!("{API}/users/{id}/tracks?limit=200&linked_partitioning=1");
-            let tracks = paginate(&first, paths, track_from_json)?;
+            let tracks = paginate(&first, paths, auth, track_from_json)?;
             Ok(Resolved::Collection { title: format!("{name} — Tracks"), tracks })
         }
         _ => bail!("Not a SoundCloud link"),
@@ -74,17 +92,21 @@ fn user_info(user: &Value) -> Result<(u64, String)> {
     Ok((id, name))
 }
 
-fn api_resolve(url: &str, paths: &Paths) -> Result<Value> {
+fn api_resolve(url: &str, paths: &Paths, auth: Option<&str>) -> Result<Value> {
     let encoded: String = url::form_urlencoded::byte_serialize(url.as_bytes()).collect();
-    api_get(&format!("{API}/resolve?url={encoded}"), paths)
+    api_get(&format!("{API}/resolve?url={encoded}"), paths, auth)
 }
 
 /// GET an api-v2 URL, adding the client_id and refreshing it once if rejected.
-fn api_get(url: &str, paths: &Paths) -> Result<Value> {
+fn api_get(url: &str, paths: &Paths, auth: Option<&str>) -> Result<Value> {
     for attempt in 0..2 {
         let cid = client_id(paths, attempt > 0)?;
         let sep = if url.contains('?') { '&' } else { '?' };
-        let mut resp = http().get(format!("{url}{sep}client_id={cid}")).call()?;
+        let mut req = http().get(format!("{url}{sep}client_id={cid}"));
+        if let Some(token) = auth {
+            req = req.header("Authorization", format!("OAuth {token}"));
+        }
+        let mut resp = req.call()?;
         match resp.status().as_u16() {
             200..=299 => {
                 return Ok(resp.body_mut().with_config().limit(64 * 1024 * 1024).read_json()?);
@@ -160,7 +182,7 @@ fn find_client_id(js: &str) -> Option<String> {
 }
 
 /// Playlists only embed full data for the first few tracks; fetch the rest by id.
-fn playlist_tracks(v: &Value, paths: &Paths) -> Result<Vec<Track>> {
+fn playlist_tracks(v: &Value, paths: &Paths, auth: Option<&str>) -> Result<Vec<Track>> {
     let items = v["tracks"].as_array().cloned().unwrap_or_default();
     let mut known: HashMap<u64, Track> = HashMap::new();
     let mut missing = Vec::new();
@@ -175,7 +197,7 @@ fn playlist_tracks(v: &Value, paths: &Paths) -> Result<Vec<Track>> {
     }
     for chunk in missing.chunks(50) {
         let ids: Vec<String> = chunk.iter().map(u64::to_string).collect();
-        let fetched = api_get(&format!("{API}/tracks?ids={}", ids.join("%2C")), paths)?;
+        let fetched = api_get(&format!("{API}/tracks?ids={}", ids.join("%2C")), paths, auth)?;
         for t in fetched.as_array().into_iter().flatten() {
             if let (Some(id), Some(track)) = (t["id"].as_u64(), track_from_json(t)) {
                 known.insert(id, track);
@@ -194,13 +216,18 @@ fn playlist_tracks(v: &Value, paths: &Paths) -> Result<Vec<Track>> {
         .collect())
 }
 
-fn paginate(first: &str, paths: &Paths, map: impl Fn(&Value) -> Option<Track>) -> Result<Vec<Track>> {
+fn paginate(
+    first: &str,
+    paths: &Paths,
+    auth: Option<&str>,
+    map: impl Fn(&Value) -> Option<Track>,
+) -> Result<Vec<Track>> {
     let mut out = Vec::new();
     let mut next = Some(first.to_string());
     while let Some(url) = next.take() {
         // next_href already carries query params but not our client_id.
         let url = strip_client_id(&url);
-        let page = api_get(&url, paths)?;
+        let page = api_get(&url, paths, auth)?;
         for item in page["collection"].as_array().into_iter().flatten() {
             if let Some(t) = map(item) {
                 out.push(t);
@@ -266,7 +293,7 @@ mod tests {
     #[ignore = "network"]
     fn live_set() {
         let link = super::super::parse_link("https://soundcloud.com/forss/sets/soulhack").unwrap();
-        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths()).unwrap() else {
+        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths(), None).unwrap() else {
             panic!()
         };
         println!("{title}: {:?}", tracks.iter().map(|t| &t.title).collect::<Vec<_>>());
@@ -277,7 +304,7 @@ mod tests {
     #[ignore = "network"]
     fn live_likes() {
         let link = super::super::parse_link("https://soundcloud.com/forss/likes").unwrap();
-        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths()).unwrap() else {
+        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths(), None).unwrap() else {
             panic!()
         };
         println!("{title}: {} tracks", tracks.len());

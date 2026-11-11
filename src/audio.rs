@@ -81,3 +81,20 @@ impl Audio {
         self.loaded && self.player.empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Decode a file given by LP_DECODE_FILE to the end (and test seeking).
+    #[test]
+    #[ignore = "needs LP_DECODE_FILE"]
+    fn decode_file() {
+        use rodio::Source as _;
+        let path = std::env::var("LP_DECODE_FILE").unwrap();
+        let mut d = rodio::Decoder::try_from(std::fs::File::open(&path).unwrap()).unwrap();
+        println!("duration {:?}", d.total_duration());
+        d.try_seek(std::time::Duration::from_secs(60)).unwrap();
+        let n = d.count();
+        println!("samples after seek: {n}");
+        assert!(n > 44100);
+    }
+}

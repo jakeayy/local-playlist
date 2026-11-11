@@ -3,7 +3,9 @@
 
 mod app;
 mod audio;
+mod login;
 mod model;
+mod secrets;
 mod sources;
 mod ytdlp;
 
@@ -14,8 +16,9 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     AppIcons,
     [
-        ArrowDown, ArrowUp, Disc3, Import, Link, ListMusic, LoaderCircle, Pause, Play, Plus,
-        RefreshCw, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Trash, Volume2, VolumeX, X
+        ArrowDown, ArrowUp, CircleAlert, Disc3, Download, Import, Link, ListMusic, LoaderCircle, LogIn,
+        LogOut, Pause, Play, Plus, RefreshCw, Repeat, Repeat1, Settings, Shuffle, SkipBack, SkipForward,
+        Trash, Volume2, VolumeX, X
     ]
 );
 
@@ -39,6 +42,12 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    // Webview login helper process (see login.rs).
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some(login::LOGIN_ARG) {
+        login::run_helper(args.get(2).map(String::as_str).unwrap_or_default());
+    }
+
     let paths = match model::Paths::new() {
         Ok(p) => p,
         Err(e) => {
