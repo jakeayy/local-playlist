@@ -922,10 +922,11 @@ impl LocalPlaylist {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        self.audio
+        // Metadata first: while streaming, players only know the length received so far.
+        self.now
             .as_ref()
-            .and_then(|a| a.duration())
-            .or_else(|| self.now.as_ref()?.track.duration_secs.map(|s| Duration::from_secs(s as u64)))
+            .and_then(|n| n.track.duration_secs.map(|s| Duration::from_secs(s as u64)))
+            .or_else(|| self.audio.as_ref().and_then(|a| a.duration()))
     }
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {

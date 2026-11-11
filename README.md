@@ -59,6 +59,55 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
 - The only network destinations are YouTube, SoundCloud, and their CDNs. GitHub is
   contacted only to download or update components.
 
+## Web version (self-hosted)
+
+The same app also runs in the browser, served by the binary itself:
+
+```sh
+LOCAL_PLAYLIST_PASSWORD='a long password' local-playlist --server --listen 0.0.0.0:8080
+# or interactively: local-playlist --server   (prompts for the password)
+```
+
+Open `http://<host>:8080`, enter the password, and use it like the desktop app.
+
+- **Privacy:** your playlists and settings stay in the browser (local storage). The server
+  only looks up public links and streams their audio. It never receives platform logins,
+  so private playlists, likes and offline folders are desktop-only. Request URLs aren't
+  logged, and cached audio is deleted after `--cache-minutes` (default 120).
+- **Safety:** an access password (at least 8 characters) is required, and repeated wrong
+  guesses are throttled. Only YouTube and SoundCloud links are accepted, so the server
+  can't be used as a general proxy. Put it behind HTTPS (a reverse proxy) when exposing
+  it beyond your network.
+- **Components:** yt-dlp and QuickJS are downloaded into the data directory on first
+  start (`--system-tools` uses the ones on PATH), and yt-dlp is updated daily.
+- **Tip:** run it on a home connection. Datacenter IPs often get YouTube's "confirm
+  you're not a bot" wall.
+
+Options: `--listen ADDR`, `--data-dir DIR` (or `$LOCAL_PLAYLIST_DATA`), `--password-file FILE`,
+`--system-tools`, `--cache-minutes N`.
+
+### Docker
+
+```sh
+docker build -t local-playlist .
+docker run -d --name local-playlist -p 8080:8080 -v lp-data:/data \
+    -e LOCAL_PLAYLIST_PASSWORD='a long password' local-playlist
+```
+
+### Building the web UI yourself
+
+The browser build is GPUI compiled to WebAssembly. It needs a nightly toolchain because
+GPUI's web backend uses unstable wasm-threading features. The desktop app builds on stable.
+
+```sh
+rustup toolchain install nightly --profile minimal --target wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version <wasm-bindgen version from Cargo.lock> --locked
+./scripts/build-web.sh      # writes web/dist/
+cargo build --release       # embeds web/dist into the binary
+```
+
+Without `web/dist`, `--server` still runs but serves only the API.
+
 ## Requirements
 
 Runtime: nothing beyond the OS. yt-dlp and QuickJS are downloaded by the app.
@@ -91,6 +140,8 @@ Layout:
 | `src/ytdlp.rs` | Components (yt-dlp build, QuickJS), metadata fallback, audio download |
 | `src/login.rs` | Webview login helper process (`local-playlist --login <platform>`) |
 | `src/secrets.rs` | Encrypted cookie storage, cookie parsing |
+| `src/server.rs` | `--server`: web UI, auth, resolve and audio streaming API |
+| `src/web/` | Browser build: entry point, server API client, `<audio>` playback, stand-ins |
 | `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
 | `src/download.rs` | Shared download state |
 | `src/storage.rs` | Music folder layout, removed-tracks cache |
