@@ -41,9 +41,9 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
   "Log out" deletes the session.
 - Metadata comes from each platform's public web endpoints, the same ones their websites
   use for logged-out visitors: YouTube InnerTube and oEmbed, and SoundCloud api-v2 with the
-  public web `client_id`. No cookies are sent or stored.
+  public web `client_id`. Unless you log in, no cookies are sent or stored.
 - Audio is downloaded by yt-dlp into `~/.cache/local-playlist/audio/` and played locally.
-  The trash button under "Update yt-dlp" clears that cache.
+  Settings → Storage → "Clear audio cache" empties it.
 - The only network destinations are YouTube, SoundCloud, and their CDNs. GitHub is
   contacted only to download or update components.
 
