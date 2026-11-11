@@ -8,6 +8,7 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
 
 ## Features
 
+- **Material-style light and dark themes** that can follow the system.
 - **Mixed playlists:** add YouTube, YouTube Music and SoundCloud tracks to the same playlist
   by pasting their link (`watch?v=`, `youtu.be/`, `shorts/`, `music.youtube.com`,
   `soundcloud.com/artist/track`, `on.soundcloud.com` short links).
@@ -31,6 +32,7 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
     that identifies as Firefox. Once you're signed in, the app keeps only the session
     cookies. There are no OAuth apps or client IDs.
   - **Paste cookies…** accepts a Netscape `cookies.txt` export or a raw `Cookie:` header.
+    See [ADDING-COOKIES.md](ADDING-COOKIES.md) for how to get them.
   - Sessions are used only when needed: for personal lists, or as a retry when anonymous
     access fails.
 - **Batteries included:** on first run the app offers to download

@@ -8,6 +8,7 @@ use crate::ytdlp::Source;
 use gpui_kit::component::input::Textarea;
 
 const PLATFORMS: [Platform; 2] = [Platform::YouTube, Platform::SoundCloud];
+const COOKIES_HELP_URL: &str = "https://github.com/jakeayy/local-playlist/blob/main/ADDING-COOKIES.md";
 
 impl LocalPlaylist {
     // ------------------------------------------------------------ components
@@ -452,6 +453,15 @@ impl LocalPlaylist {
                             h_flex()
                                 .gap_2()
                                 .justify_end()
+                                .child(
+                                    Button::new(SharedString::from(format!("help-{}", p.short())))
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::CircleQuestionMark)
+                                        .label("How do I get cookies?")
+                                        .on_click(cx.listener(|_, _, _, cx| cx.open_url(COOKIES_HELP_URL))),
+                                )
+                                .child(div().flex_1())
                                 .child(
                                     Button::new(SharedString::from(format!("cancel-{}", p.short())))
                                         .ghost()
