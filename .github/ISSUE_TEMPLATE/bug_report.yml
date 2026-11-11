@@ -1,0 +1,98 @@
+name: Bug report
+description: Something in Local Playlist doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Before you paste anything, remove personal data:**
+        never include cookies, `oauth_token`/`SAPISID` values, your server password,
+        `token=` values from `/api/audio` URLs, or links to private playlists.
+
+        If YouTube or SoundCloud links suddenly stopped working, use the
+        **Site change / extraction broken** template instead.
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Where does it happen?
+      options:
+        - Desktop app
+        - Web version (in the browser)
+        - Server (`--server`)
+        - Docker image
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `local-playlist --version`, or the commit (`git rev-parse --short HEAD`).
+      placeholder: "local-playlist 0.1.0 (c01625f)"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: OS and version. On Linux, add the desktop and Wayland/X11. For the web version, the browser too.
+      placeholder: "Fedora 45, KDE Plasma (Wayland); Firefox 158"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Playback / streaming
+        - Adding tracks / importing playlists
+        - Accounts (login, pasted cookies, channels)
+        - Downloads / music folder / removed-tracks cache
+        - Components (yt-dlp, QuickJS)
+        - Interface / themes
+        - Web server / Docker
+        - Other
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      multiple: true
+      options:
+        - YouTube
+        - YouTube Music
+        - SoundCloud
+        - Not platform-specific
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead (including any error message).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: If a specific link triggers it, include a **public** example link.
+      placeholder: |
+        1. Paste https://soundcloud.com/… into "Import playlist"
+        2. Click a track
+        3. …
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Terminal output (start the app or server from a terminal). For import problems with a
+        YouTube login, `local-playlist --diagnose <playlist url>` prints only cookie *names*.
+        Double-check that nothing secret is included.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: I removed cookies, tokens, passwords and private links from this report.
+          required: true

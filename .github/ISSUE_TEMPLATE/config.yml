@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/jakeayy/local-playlist/security/advisories/new
+    about: Please report vulnerabilities privately (e.g. anything exposing cookies, tokens or the server).
+  - name: Problem also happens with plain yt-dlp
+    url: https://github.com/yt-dlp/yt-dlp/issues
+    about: If `yt-dlp <link>` fails the same way on its own, report it to yt-dlp.

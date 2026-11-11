@@ -4,6 +4,21 @@
 use std::fmt::Write as _;
 
 fn main() {
+    // Version string for `--version` (and bug reports): package version + git commit.
+    let commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|c| !c.is_empty());
+    let version = match commit {
+        Some(c) => format!("{} ({c})", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").to_string(),
+    };
+    println!("cargo::rustc-env=LOCAL_PLAYLIST_VERSION={version}");
+    println!("cargo::rerun-if-changed=.git/HEAD");
+    println!("cargo::rerun-if-changed=.git/refs/heads");
     println!("cargo::rustc-check-cfg=cfg(web_ui)");
     println!("cargo::rerun-if-changed=web/dist");
     println!("cargo::rerun-if-changed=web/icons");

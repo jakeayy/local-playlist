@@ -11,6 +11,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str);
 
+    if matches!(mode, Some("--version" | "-V")) {
+        println!("local-playlist {}", env!("LOCAL_PLAYLIST_VERSION"));
+        return;
+    }
+
     // Webview login helper process (see login.rs).
     #[cfg(feature = "desktop")]
     if mode == Some(login::LOGIN_ARG) {

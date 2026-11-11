@@ -140,7 +140,18 @@ The server-only build needs none of these.
 ```sh
 cargo test                       # offline unit tests
 cargo test -- --ignored          # live tests against YouTube / SoundCloud / GitHub
+local-playlist --version         # version + commit, for bug reports
 ```
+
+Release builds use full LTO with a single codegen unit (smaller, at least as fast, but
+slower to compile). The web build uses the size-focused `wasm-release` profile plus
+`wasm-opt`.
+
+Approximate release sizes: desktop app (including server and web UI) 48 MB, server-only
+9.5 MB, web UI 5.8 MB gzipped.
+
+Bug reports, site-breakage reports and feature requests use issue forms. Pull requests
+come with a checklist covering the three builds and the privacy rules.
 
 Layout:
 

@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Local Playlist is **local-first and privacy-friendly**: no accounts of its own,
+        no telemetry, and no third-party servers. Platform logins never leave the desktop app.
+        Ideas that fit these goals have the best chance.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Which version would this affect?
+      multiple: true
+      options:
+        - Desktop app
+        - Web version / server
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: This doesn't require sending data anywhere other than the platform being played from (or GitHub, for component updates).

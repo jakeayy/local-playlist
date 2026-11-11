@@ -1,0 +1,74 @@
+name: Site change / extraction broken
+description: YouTube or SoundCloud links stopped importing or playing
+labels: ["site-change"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Platforms change their websites often, and these breakages usually come in waves.
+        **Please first:** open **Settings → Components** and click **Update bundled
+        components** (servers update yt-dlp daily on their own). Then try again.
+
+        Don't include cookies, tokens or private links.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - YouTube
+        - YouTube Music
+        - SoundCloud
+    validations:
+      required: true
+  - type: dropdown
+    id: what
+    attributes:
+      label: What fails?
+      multiple: true
+      options:
+        - Adding a single track
+        - Importing a playlist / set / likes
+        - Private content with a login
+        - Playback / download
+    validations:
+      required: true
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Where?
+      options:
+        - Desktop app
+        - Web version / server
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "`local-playlist --version` and the yt-dlp version from Settings → Components."
+      placeholder: "local-playlist 0.1.0 (c01625f); yt-dlp 412e7f0 (2026.11.04.071645), bundled"
+    validations:
+      required: true
+  - type: input
+    id: example
+    attributes:
+      label: Public example link
+      placeholder: https://www.youtube.com/watch?v=…
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message / logs
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I updated the bundled components (or my system yt-dlp) and it still fails.
+          required: true
+        - label: I removed cookies, tokens and private links from this report.
+          required: true

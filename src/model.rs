@@ -209,7 +209,9 @@ impl Library {
 
 #[cfg(not(target_family = "wasm"))]
 pub fn new_id() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("system random number generator unavailable");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(target_family = "wasm")]
