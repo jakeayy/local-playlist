@@ -4,21 +4,26 @@
 //! The same crate builds the desktop app (native), the web UI (wasm32, run in
 //! the browser against a `--server` instance) and that server.
 
+#[cfg(all(feature = "ui", not(target_family = "wasm"), not(feature = "desktop")))]
+compile_error!("on native targets the `ui` feature needs `desktop`");
+
+#[cfg(feature = "ui")]
 pub mod app;
 pub mod download;
 pub mod model;
 pub mod sources;
 pub mod storage;
+#[cfg(feature = "ui")]
 pub mod theme;
 
 // Desktop-only implementations, with web stand-ins of the same API so the UI
 // code compiles unchanged for the browser (where those features are hidden).
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "desktop"))]
 pub mod audio;
 #[cfg(target_family = "wasm")]
 #[path = "web/audio.rs"]
 pub mod audio;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "desktop"))]
 pub mod login;
 #[cfg(target_family = "wasm")]
 #[path = "web/login.rs"]
@@ -30,7 +35,7 @@ pub mod ytdlp;
 #[path = "web/ytdlp.rs"]
 pub mod ytdlp;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "server"))]
 pub mod server;
 #[cfg(target_family = "wasm")]
 pub mod web;
@@ -49,12 +54,13 @@ pub fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 use std::borrow::Cow;
 
+#[cfg(feature = "ui")]
 use gpui_kit::*;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 gpui_kit::assets::icon_assets!(
     AppIcons,
     [
@@ -65,11 +71,11 @@ gpui_kit::assets::icon_assets!(
     ]
 );
 
-/// Embedded icons (desktop), also served to the web UI by `--server`.
-#[cfg(not(target_family = "wasm"))]
+/// Embedded icons for the desktop app.
+#[cfg(feature = "desktop")]
 pub struct AppAssets;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if let Some(bytes) = AppIcons.load(path)? {
@@ -88,6 +94,7 @@ impl AssetSource for AppAssets {
 }
 
 /// Window content shared by desktop and web.
+#[cfg(feature = "ui")]
 pub fn window_options(cx: &App) -> WindowOptions {
     WindowOptions {
         titlebar: Some(TitlebarOptions { title: Some("Local Playlist".into()), ..Default::default() }),
@@ -98,7 +105,7 @@ pub fn window_options(cx: &App) -> WindowOptions {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 pub fn run_desktop(paths: model::Paths) {
     gpui_kit::application().with_assets(AppAssets).run(move |cx| {
         gpui_kit::init(cx);

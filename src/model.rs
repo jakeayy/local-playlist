@@ -112,7 +112,7 @@ pub struct Settings {
     /// Size limit of the removed-tracks cache, in MB.
     pub removed_cache_mb: u64,
     /// System / light / dark.
-    pub appearance: crate::theme::Appearance,
+    pub appearance: Appearance,
 }
 
 impl Default for Settings {
@@ -251,4 +251,14 @@ impl Paths {
 pub fn format_duration(secs: u32) -> String {
     let (h, m, s) = (secs / 3600, (secs / 60) % 60, secs % 60);
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// Light/dark choice (System follows the OS).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
 }

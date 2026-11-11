@@ -9,19 +9,19 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 use anyhow::Context as _;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 use chacha20poly1305::aead::{Aead, KeyInit};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Paths, Platform};
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 const KEYRING_SERVICE: &str = "local-playlist";
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 const KEYRING_USER: &str = "cookie-encryption-key";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,7 +44,7 @@ fn root_path() -> String {
     "/".into()
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 impl StoredCookie {
     pub fn from_cookie(c: &wry::cookie::Cookie<'_>) -> Self {
         Self {
@@ -113,8 +113,8 @@ pub struct SecretStore {
     key_file: PathBuf,
 }
 
-/// The browser build never stores platform logins.
-#[cfg(target_family = "wasm")]
+/// Builds without the desktop app (browser, server) never store platform logins.
+#[cfg(not(feature = "desktop"))]
 impl SecretStore {
     pub fn new(paths: &Paths) -> Self {
         Self { file: paths.data.clone(), key_file: paths.data.clone() }
@@ -125,11 +125,11 @@ impl SecretStore {
     }
 
     pub fn save(&self, _: &Credentials) -> Result<KeyStorage> {
-        bail!("logins aren't available in the web version")
+        bail!("logins are only available in the desktop app")
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 impl SecretStore {
     pub fn new(paths: &Paths) -> Self {
         Self { file: paths.data.join("credentials.bin"), key_file: paths.data.join("credentials.key") }
@@ -194,7 +194,7 @@ impl SecretStore {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "desktop")]
 fn random_key() -> Result<[u8; 32]> {
     let mut k = [0u8; 32];
     getrandom::fill(&mut k).map_err(|e| anyhow::anyhow!("rng: {e}"))?;
@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(feature = "desktop")]
     fn encrypt_roundtrip_with_file_key() {
         let dir = std::env::temp_dir().join(format!("lp-secret-test-{}", std::process::id()));
         let paths = Paths { data: dir.clone(), cache: dir.join("cache") };

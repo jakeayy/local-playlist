@@ -10,29 +10,41 @@ path = "src/lib.rs"
 name = "local-playlist"
 path = "src/main.rs"
 
+[features]
+default = ["desktop", "server"]
+# The GPUI interface (desktop app and browser build).
+ui = ["dep:gpui-kit"]
+# Native desktop app: audio output, webview login, system keyring.
+desktop = ["ui", "dep:rodio", "dep:wry", "dep:tao", "dep:keyring", "dep:chacha20poly1305"]
+# `--server`: web UI + API. Build only this for a slim server binary:
+#   cargo build --release --no-default-features --features server
+server = ["dep:tiny_http", "dep:rpassword"]
+
 [dependencies]
 anyhow = "1.0.104"
-gpui-kit = { version = "0.9.1", features = ["gpui-fast"] }
+gpui-kit = { version = "0.9.1", features = ["gpui-fast"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 url = "2.5.8"
 
-# Desktop app and server.
+# Shared by the desktop app and the server.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-chacha20poly1305 = "0.11.0"
 directories = "6.0.0"
 getrandom = "0.4.3"
-keyring = "4.2.0"
-rodio = { version = "0.23.0", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-mp3", "symphonia-vorbis", "symphonia-flac", "symphonia-wav"] }
-rpassword = "7.5.5"
 sha1_smol = "1.0.1"
 sha2 = "0.11.1"
-tao = "0.37"
-tiny_http = "0.12.0"
 ureq = { version = "3.5.1", features = ["json"] }
 uuid = { version = "1.29.2", features = ["v4"] }
-wry = "0.57"
 zip = "9.5.1"
+# desktop
+chacha20poly1305 = { version = "0.11.0", optional = true }
+keyring = { version = "4.2.0", optional = true }
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-mp3", "symphonia-vorbis", "symphonia-flac", "symphonia-wav"], optional = true }
+tao = { version = "0.37", optional = true }
+wry = { version = "0.57", optional = true }
+# server
+rpassword = { version = "7.5.5", optional = true }
+tiny_http = { version = "0.12.0", optional = true }
 
 # Browser build (see scripts/build-web.sh).
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -40,3 +52,15 @@ js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Document", "Element", "Headers", "HtmlAudioElement", "HtmlMediaElement", "Location", "MediaError", "Request", "RequestInit", "RequestMode", "Response", "Storage", "Window"] }
+
+[profile.release]
+# Moderate size/speed wins without slow full-LTO builds.
+lto = "thin"
+strip = "symbols"
+
+# Browser build: favour size (the .wasm is downloaded by every visitor).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+# wasm-bindgen needs the target_features section; wasm-opt strips the rest.
+strip = false

@@ -176,6 +176,7 @@ pub fn http() -> &'static ureq::Agent {
 
 /// Resolve on the desktop (blocking work on a background thread) or, in the
 /// browser, by asking the server.
+#[cfg(feature = "ui")]
 pub fn resolve_task(
     cx: &gpui_kit::App,
     link: Link,

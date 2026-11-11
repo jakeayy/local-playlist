@@ -33,6 +33,9 @@ const APP_JS: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/web/d
 #[cfg(web_ui)]
 const APP_WASM: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/web/dist/local_playlist_bg.wasm.gz"));
 
+// Icons used by the web UI (web/icons/*.svg, embedded by build.rs).
+include!(concat!(env!("OUT_DIR"), "/icons.rs"));
+
 const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; \
     media-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; \
     frame-ancestors 'none'; form-action 'none'";
@@ -243,11 +246,10 @@ fn handle(state: &State, mut req: Request) {
         #[cfg(web_ui)]
         (Method::Get, "/local_playlist_bg.wasm") => respond(req, gz(APP_WASM, "application/wasm")),
         (Method::Get, p) if p.starts_with("/assets/icons/") && p.ends_with(".svg") => {
-            use gpui_kit::AssetSource as _;
-            match crate::AppAssets.load(&p["/assets/".len()..]) {
-                Ok(Some(bytes)) => respond(
+            match ICONS.iter().find(|(name, _)| *name == &p["/assets/icons/".len()..]) {
+                Some((_, bytes)) => respond(
                     req,
-                    Response::from_data(bytes.into_owned())
+                    Response::from_data(bytes.to_vec())
                         .with_header(header("Content-Type", "image/svg+xml"))
                         .with_header(header("Cache-Control", "public, max-age=86400")),
                 ),

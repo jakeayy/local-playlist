@@ -738,6 +738,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "desktop")]
     #[ignore = "network; downloads yt-dlp, QuickJS and audio"]
     fn live_install_download_decode() {
         use crate::model::Platform;

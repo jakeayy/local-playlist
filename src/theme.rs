@@ -2,18 +2,10 @@
 
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Window};
-use serde::{Deserialize, Serialize};
 
 const THEMES: &str = include_str!("../assets/material-theme.json");
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Appearance {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
+pub use crate::model::Appearance;
 
 /// Register the Material themes as the app's light and dark themes.
 pub fn init(cx: &mut App) {

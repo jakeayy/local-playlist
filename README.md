@@ -102,11 +102,22 @@ GPUI's web backend uses unstable wasm-threading features. The desktop app builds
 ```sh
 rustup toolchain install nightly --profile minimal --target wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version <wasm-bindgen version from Cargo.lock> --locked
+# optional, shrinks the download ~40%: wasm-opt from https://github.com/WebAssembly/binaryen/releases
 ./scripts/build-web.sh      # writes web/dist/
-cargo build --release       # embeds web/dist into the binary
+cargo build --release       # desktop app + server, embeds web/dist
 ```
 
 Without `web/dist`, `--server` still runs but serves only the API.
+
+For a server-only binary (no GUI libraries, links only libc; this is what the Docker
+image uses):
+
+```sh
+cargo build --release --no-default-features --features server
+```
+
+Cargo features: `desktop` (GPUI app, audio, webview login, keyring; implies `ui`) and
+`server` are both on by default. The browser build uses only `ui`.
 
 ## Requirements
 
@@ -115,12 +126,14 @@ Runtime: nothing beyond the OS. yt-dlp and QuickJS are downloaded by the app.
 If you choose "System" components instead, you need `yt-dlp` and one of `deno`/`node`/
 `bun`/`qjs` on `PATH`.
 
-Build (Fedora package names):
+Build the desktop app (Fedora package names):
 
 ```sh
 sudo dnf install alsa-lib-devel webkit2gtk4.1-devel gtk3-devel dbus-devel
 cargo run --release
 ```
+
+The server-only build needs none of these.
 
 ## Development
 
