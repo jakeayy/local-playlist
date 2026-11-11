@@ -32,7 +32,7 @@ pub fn resolve(link: &Link, paths: &Paths, oauth: Option<&str>) -> Result<Resolv
     }
     match resolve_with(link, paths, None) {
         Ok(r) => Ok(r),
-        Err(e) if oauth.is_some() => resolve_with(link, paths, oauth).map_err(|_| e),
+        Err(_) if oauth.is_some() => resolve_with(link, paths, oauth),
         Err(e) => Err(e),
     }
 }

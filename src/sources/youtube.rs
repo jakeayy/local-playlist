@@ -122,7 +122,8 @@ pub fn playlist(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, Ve
     }
     match playlist_with(list, None) {
         Ok(r) => Ok(r),
-        Err(e) if auth.is_some() => playlist_with(list, auth).map_err(|_| e),
+        // Report the authenticated attempt's error: it's the informative one.
+        Err(_) if auth.is_some() => playlist_with(list, auth),
         Err(e) => Err(e),
     }
 }
@@ -139,6 +140,9 @@ pub fn personal_list_name(list: &str) -> &'static str {
 fn playlist_with(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, Vec<Track>)> {
     let browse_id = format!("VL{list}");
     let first = innertube("browse", json!({ "browseId": browse_id }), auth)?;
+    if auth.is_some() && is_logged_out(&first) {
+        bail!("YouTube didn't accept the saved login (the session may have expired). Log out and log in again in Settings.");
+    }
 
     if let Some(alert) = find_alert(&first) {
         bail!("YouTube: {alert}");
@@ -171,6 +175,70 @@ fn playlist_with(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, V
         bail!("Playlist is empty, private, or could not be read");
     }
     Ok((title, tracks))
+}
+
+/// YouTube marks every response with whether the request was authenticated.
+pub fn is_logged_out(v: &Value) -> bool {
+    v.pointer("/responseContext/mainAppWebResponseContext/loggedOut").and_then(Value::as_bool).unwrap_or(true)
+}
+
+/// Debug helper: what YouTube sees for a browse request (no secrets printed).
+pub fn diagnose(list: &str, auth: Option<&[StoredCookie]>) -> Result<String> {
+    let mut out = String::new();
+    if let Some(c) = auth {
+        let mut names: Vec<&str> = c.iter().map(|c| c.name.as_str()).collect();
+        names.sort();
+        out += &format!("cookies: {}\n", names.join(", "));
+        out += &format!("authorization header: {}\n", sapisid_hash(c).map(|h| h.split(' ').step_by(2).collect::<Vec<_>>().join(", ")).unwrap_or("none".into()));
+    } else {
+        out += "no saved YouTube session\n";
+    }
+    let list = list.strip_prefix("VL").unwrap_or(list);
+    let v = innertube("browse", json!({ "browseId": format!("VL{list}") }), auth)?;
+    out += &format!("loggedOut: {}\n", is_logged_out(&v));
+    out += &format!("alert: {:?}\n", find_alert(&v));
+    out += &format!(
+        "title: {:?}\n",
+        v.pointer("/metadata/playlistMetadataRenderer/title").and_then(Value::as_str)
+    );
+    let mut tracks = Vec::new();
+    collect_page(v.get("contents").unwrap_or(&Value::Null), &mut tracks);
+    out += &format!("first page tracks: {}\n", tracks.len());
+    if auth.is_some() {
+        let lib = innertube("browse", json!({ "browseId": "FEplaylist_aggregation" }), auth)?;
+        let ids = own_playlist_ids(&lib);
+        out += &format!("playlists in your library: {}\n", ids.len());
+        let matches: Vec<&String> =
+            ids.iter().filter(|id| id.starts_with(list) || list.starts_with(id.as_str())).collect();
+        out += &format!("library ids matching this link: {matches:?}\n");
+    }
+    Ok(out)
+}
+
+/// Playlist ids shown in a "Playlists" library page.
+fn own_playlist_ids(v: &Value) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                if let Some(l) = m.get("lockupViewModel")
+                    && l["contentType"].as_str() == Some("LOCKUP_CONTENT_TYPE_PLAYLIST")
+                    && let Some(id) = l["contentId"].as_str()
+                {
+                    out.push(id.to_string());
+                }
+                if let Some(id) = m.get("gridPlaylistRenderer").and_then(|r| r["playlistId"].as_str()) {
+                    out.push(id.to_string());
+                }
+                m.values().for_each(|c| walk(c, out));
+            }
+            Value::Array(a) => a.iter().for_each(|c| walk(c, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(v, &mut out);
+    out.dedup();
+    out
 }
 
 fn find_alert(v: &Value) -> Option<String> {

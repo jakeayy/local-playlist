@@ -56,6 +56,26 @@ fn main() {
         }
     };
 
+    // `local-playlist --diagnose <youtube playlist url>`: print what YouTube
+    // returns with the saved session (cookie names only, never values).
+    if args.get(1).map(String::as_str) == Some("--diagnose") {
+        let url = args.get(2).cloned().unwrap_or_default();
+        let creds = secrets::SecretStore::new(&paths).load().map(|(c, _)| c);
+        let result = (|| -> anyhow::Result<String> {
+            let creds = creds?;
+            let list = match sources::parse_link(&url)? {
+                sources::Link::YouTubePlaylist { list } | sources::Link::YouTubeVideo { list: Some(list), .. } => list,
+                other => anyhow::bail!("not a YouTube playlist link: {other:?}"),
+            };
+            sources::youtube::diagnose(&list, creds.get(model::Platform::YouTube))
+        })();
+        match result {
+            Ok(s) => print!("{s}"),
+            Err(e) => eprintln!("{e:#}"),
+        }
+        return;
+    }
+
     gpui_kit::application().with_assets(AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         gpui_kit::component::Theme::sync_system_appearance(None, cx);
