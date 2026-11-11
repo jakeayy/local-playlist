@@ -3,10 +3,12 @@
 
 mod app;
 mod audio;
+mod download;
 mod login;
 mod model;
 mod secrets;
 mod sources;
+mod storage;
 mod ytdlp;
 
 use std::borrow::Cow;
@@ -16,7 +18,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     AppIcons,
     [
-        ArrowDown, ArrowUp, CircleAlert, Disc3, Download, Import, Link, ListMusic, LoaderCircle, LogIn,
+        ArrowDown, ArrowUp, CircleAlert, Disc3, Download, FolderOpen, HardDriveDownload, Import, Link, ListMusic, LoaderCircle, LogIn,
         LogOut, Pause, Play, Plus, RefreshCw, Repeat, Repeat1, Settings, Shuffle, SkipBack, SkipForward,
         Trash, Volume2, VolumeX, X
     ]

@@ -249,13 +249,15 @@ impl YtDlp {
         progress: impl Fn(f32),
     ) -> Result<PathBuf> {
         std::fs::create_dir_all(dir)?;
-        let template = dir.join(format!("{}.%(ext)s", track.cache_key()));
+        let template = dir.join(format!("{}.%(ext)s", track.file_key()));
         let mut cmd = self.command()?;
         let cookie_file = cookies.map(|c| self.cookie_file(c)).transpose()?;
         if let Some(f) = &cookie_file {
             cmd.arg("--cookies").arg(f.path());
         }
-        cmd.args(["--no-playlist", "--no-mtime", "--progress", "--newline", "-N", "4"])
+        // --no-part: write straight to the final name so the player can read
+        // the file while it grows (the download happens in a private temp dir).
+        cmd.args(["--no-playlist", "--no-mtime", "--no-part", "--progress", "--newline", "-N", "4"])
             .args(["-f", FORMAT])
             .args(["--progress-template", "download:LPPROGRESS %(progress._percent_str)s"])
             .args(["--print", "after_move:LPFILE %(filepath)s"])
@@ -295,7 +297,8 @@ impl YtDlp {
         }
         match file {
             Some(f) if f.exists() => Ok(f),
-            _ => find_cached(dir, &track.cache_key()).context("yt-dlp finished but the audio file was not found"),
+            _ => crate::storage::find_file(dir, &track.file_key())
+                .context("yt-dlp finished but the audio file was not found"),
         }
     }
 
@@ -465,15 +468,6 @@ impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
-}
-
-/// Look for an already-downloaded audio file for `key` in `dir`.
-pub fn find_cached(dir: &Path, key: &str) -> Option<PathBuf> {
-    let prefix = format!("{key}.");
-    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        name.starts_with(&prefix) && p.extension().and_then(|e| e.to_str()).is_some_and(|e| AUDIO_EXTS.contains(&e))
-    })
 }
 
 /// Errors that a logged-in session might fix.
@@ -741,11 +735,12 @@ mod tests {
             (Platform::SoundCloud, "293", "https://soundcloud.com/forss/flickermood"),
         ] {
             let t = Track::new(platform, id, url, "t", "a", None);
-            if let Some(f) = find_cached(&paths.audio_cache(), &t.cache_key()) {
+            let out = dir.join("audio");
+            if let Some(f) = crate::storage::find_file(&out, &t.file_key()) {
                 let _ = std::fs::remove_file(f);
             }
             let start = std::time::Instant::now();
-            let f = y.download(&t, &paths.audio_cache(), None, |_| {}).unwrap();
+            let f = y.download(&t, &out, None, |_| {}).unwrap();
             println!("{} in {:?}", f.display(), start.elapsed());
             use rodio::Source as _;
             let d = rodio::Decoder::try_from(std::fs::File::open(&f).unwrap()).unwrap();

@@ -4,7 +4,7 @@ mod settings;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,17 +27,9 @@ use crate::sources::{self, Link, Resolved};
 use crate::ytdlp::{self, Component, State, Status, YtDlp};
 use gpui_kit::component::input::TextareaState;
 
-/// Shared state of one background audio download.
-struct Download {
-    progress: AtomicU32, // f32 bits, 0..1
-    result: Mutex<Option<Result<PathBuf, String>>>,
-}
-
-impl Download {
-    fn progress(&self) -> f32 {
-        f32::from_bits(self.progress.load(Ordering::Relaxed))
-    }
-}
+use crate::audio::Input as AudioInput;
+use crate::download::Download;
+use crate::storage;
 
 #[derive(Clone)]
 struct NowPlaying {
@@ -51,10 +43,10 @@ enum View {
     Settings,
 }
 
+#[derive(PartialEq, Eq)]
 enum PlayState {
     Idle,
-    /// Waiting for the audio file of `now` to download.
-    Loading { key: String },
+    /// A track is loaded (it may still be buffering; see `Audio::is_buffering`).
     Playing,
 }
 
@@ -69,7 +61,12 @@ pub struct LocalPlaylist {
     state: PlayState,
     /// Order used when shuffle is on (track entry ids).
     shuffle_order: Vec<String>,
-    downloads: HashMap<String, Arc<Download>>,
+    /// Running downloads keyed by target file stem (`<playlist dir>/<key>`).
+    downloads: HashMap<PathBuf, Arc<Download>>,
+    /// "Download all" queue: (playlist id, track entry id).
+    download_queue: std::collections::VecDeque<(String, String)>,
+    /// Playlist whose folder should follow its (edited) name, and when it was last edited.
+    pending_folder_rename: Option<(String, std::time::Instant)>,
 
     url_input: Entity<InputState>,
     import_input: Entity<InputState>,
@@ -93,6 +90,7 @@ pub struct LocalPlaylist {
     /// YouTube channels of the logged-in account (loaded when the picker opens).
     yt_channels: Option<Result<Vec<sources::youtube::Channel>, String>>,
     channel_picker_open: bool,
+    moving_music: bool,
     confirm_delete: bool,
     pending_notes: Vec<Notification>,
 
@@ -170,6 +168,7 @@ impl LocalPlaylist {
                         && p.name != name
                     {
                         p.name = name;
+                        this.pending_folder_rename = Some((id.clone(), std::time::Instant::now()));
                         this.save();
                         cx.notify();
                     }
@@ -212,6 +211,13 @@ impl LocalPlaylist {
             }
         });
 
+        let mut library = library;
+        for i in 0..library.playlists.len() {
+            if library.playlists[i].folder.is_none() {
+                let (id, name) = (library.playlists[i].id.clone(), library.playlists[i].name.clone());
+                library.playlists[i].folder = Some(storage::unique_folder(&library, &id, &name));
+            }
+        }
         let selected = library.playlists.first().map(|p| p.id.clone());
         let mut this = Self {
             ytdlp: YtDlp::new(&paths, library.settings.ytdlp_source, library.settings.js_source),
@@ -223,6 +229,8 @@ impl LocalPlaylist {
             state: PlayState::Idle,
             shuffle_order: Vec::new(),
             downloads: HashMap::new(),
+            download_queue: Default::default(),
+            pending_folder_rename: None,
             url_input,
             import_input,
             name_input,
@@ -241,6 +249,7 @@ impl LocalPlaylist {
             cookie_input,
             yt_channels: None,
             channel_picker_open: false,
+            moving_music: false,
             confirm_delete: false,
             pending_notes,
             list_scroll: UniformListScrollHandle::new(),
@@ -280,7 +289,8 @@ impl LocalPlaylist {
 
     fn new_playlist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let n = self.library.playlists.len() + 1;
-        let playlist = Playlist::new(format!("Playlist {n}"));
+        let mut playlist = Playlist::new(format!("Playlist {n}"));
+        playlist.folder = Some(storage::unique_folder(&self.library, &playlist.id, &playlist.name));
         let id = playlist.id.clone();
         self.library.playlists.push(playlist);
         self.save();
@@ -298,6 +308,11 @@ impl LocalPlaylist {
             self.stop(cx);
         }
         let idx = self.library.playlists.iter().position(|p| p.id == id).unwrap_or(0);
+        if let Some(p) = self.library.playlist(&id).cloned() {
+            let (paths, root, limit) = (self.paths.clone(), self.music_root(), self.removed_limit());
+            std::thread::spawn(move || storage::retire_playlist(&paths, &root, &p, limit));
+        }
+        self.download_queue.retain(|(pid, _)| *pid != id);
         self.library.playlists.retain(|p| p.id != id);
         self.save();
         let next = self
@@ -310,9 +325,17 @@ impl LocalPlaylist {
 
     fn remove_track(&mut self, track_id: &str, cx: &mut Context<Self>) {
         let Some(pid) = self.selected.clone() else { return };
-        if let Some(p) = self.library.playlist_mut(&pid) {
+        let (root, limit) = (self.music_root(), self.removed_limit());
+        if let Some(p) = self.library.playlist_mut(&pid)
+            && let Some(track) = p.tracks.iter().find(|t| t.id == track_id).cloned()
+        {
             p.tracks.retain(|t| t.id != track_id);
+            // Keep the file if the same song is still in this playlist.
+            if !p.tracks.iter().any(|t| t.file_key() == track.file_key()) {
+                storage::retire(&self.paths, &root, p, &track, limit);
+            }
         }
+        self.download_queue.retain(|(_, tid)| tid != track_id);
         self.shuffle_order.retain(|t| t != track_id);
         self.save();
         cx.notify();
@@ -424,6 +447,7 @@ impl LocalPlaylist {
                     Ok(Resolved::Collection { title, tracks }) => {
                         let n = tracks.len();
                         let mut playlist = Playlist::new(title);
+                        playlist.folder = Some(storage::unique_folder(&this.library, &playlist.id, &playlist.name));
                         playlist.tracks = tracks;
                         let id = playlist.id.clone();
                         this.library.playlists.push(playlist);
@@ -448,65 +472,78 @@ impl LocalPlaylist {
 
     // ------------------------------------------------------------- yt-dlp
 
-    fn clear_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self.paths.audio_cache();
-        let current = self.now.as_ref().map(|n| n.track.cache_key());
-        let mut removed = 0u64;
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().to_string();
-                // Don't pull the file out from under the current track or running downloads.
-                let busy = current.as_ref().is_some_and(|k| name.starts_with(&format!("{k}.")))
-                    || self.downloads.keys().any(|k| name.starts_with(&format!("{k}.")));
-                if !busy {
-                    removed += e.metadata().map(|m| m.len()).unwrap_or(0);
-                    let _ = std::fs::remove_file(e.path());
-                }
-            }
-        }
+    fn music_root(&self) -> PathBuf {
+        storage::music_root(&self.library.settings)
+    }
+
+    fn removed_limit(&self) -> u64 {
+        self.library.settings.removed_cache_mb * 1024 * 1024
+    }
+
+    fn clear_removed_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = storage::removed_dir(&self.paths);
+        let size = storage::dir_size(&dir);
+        storage::enforce_limit(&dir, 0);
+        let _ = std::fs::remove_dir_all(self.paths.cache.join("audio")); // pre-0.2 flat cache
         window.push_notification(
-            Notification::info(format!("Freed {:.1} MB of cached audio", removed as f64 / 1e6)),
+            Notification::info(format!("Freed {:.1} MB of removed tracks", size as f64 / 1e6)),
             cx,
         );
+        cx.notify();
     }
 
     // ------------------------------------------------------------- playback
 
-    fn ensure_download(&mut self, track: &Track) -> Arc<Download> {
-        let key = track.cache_key();
-        if let Some(d) = self.downloads.get(&key) {
+    /// Start (or join) the download of `track` into `playlist`'s folder.
+    fn ensure_download(&mut self, playlist: &Playlist, track: &Track) -> Arc<Download> {
+        let dir = storage::playlist_dir(&self.music_root(), playlist);
+        let key = track.file_key();
+        let map_key = dir.join(&key);
+        if let Some(d) = self.downloads.get(&map_key) {
             return d.clone();
         }
-        let dl = Arc::new(Download { progress: AtomicU32::new(0), result: Mutex::new(None) });
-        self.downloads.insert(key, dl.clone());
-        let (ytdlp, dir, track, dl2) = (self.ytdlp.clone(), self.paths.audio_cache(), track.clone(), dl.clone());
+        let tmp = dir.join(storage::DOWNLOADING_DIR).join(&key);
+        let dl = Arc::new(Download::new(tmp.clone(), key.clone()));
+        self.downloads.insert(map_key, dl.clone());
+        let (ytdlp, track, dl2) = (self.ytdlp.clone(), track.clone(), dl.clone());
         let cookies = self.creds.get(track.platform).map(<[_]>::to_vec);
         std::thread::spawn(move || {
-            // Non-negative f32 bit patterns order like the floats, so fetch_max keeps progress monotonic.
-            let progress = |p: f32| {
-                dl2.progress.fetch_max(p.to_bits(), Ordering::Relaxed);
-            };
+            let _ = std::fs::remove_dir_all(&tmp);
+            let progress = |p: f32| dl2.set_progress(p);
             // Try anonymously first; only use the session if the content needs it.
-            let mut res = ytdlp.download(&track, &dir, None, progress);
+            let mut res = ytdlp.download(&track, &tmp, None, progress);
             if let (Err(e), Some(c)) = (&res, &cookies)
                 && ytdlp::needs_login(&format!("{e:#}"))
             {
-                res = ytdlp.download(&track, &dir, Some(c), progress);
+                let _ = std::fs::remove_dir_all(&tmp);
+                res = ytdlp.download(&track, &tmp, Some(c), progress);
             }
-            *dl2.result.lock().unwrap() = Some(res.map_err(|e| format!("{e:#}")));
+            // Move the finished file into the playlist folder.
+            let res = res.and_then(|file| {
+                let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
+                let dest = dir.join(format!("{key}.{ext}"));
+                storage::move_file(&file, &dest)?;
+                Ok(dest)
+            });
+            let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::remove_dir(dir.join(storage::DOWNLOADING_DIR));
+            dl2.finish(res.map_err(|e| format!("{e:#}")));
         });
         dl
     }
 
+    /// Local file for the track if available (reusing copies), else `None`.
+    fn local_file(&self, playlist: &Playlist, track: &Track) -> Option<PathBuf> {
+        let dir = storage::playlist_dir(&self.music_root(), playlist);
+        if self.downloads.contains_key(&dir.join(track.file_key())) {
+            return None;
+        }
+        storage::materialize(&self.paths, &self.library, playlist, track)
+    }
+
     fn play(&mut self, playlist_id: &str, track_id: &str, cx: &mut Context<Self>) {
-        let Some(track) = self
-            .library
-            .playlist(playlist_id)
-            .and_then(|p| p.tracks.iter().find(|t| t.id == track_id))
-            .cloned()
-        else {
-            return;
-        };
+        let Some(playlist) = self.library.playlist(playlist_id).cloned() else { return };
+        let Some(track) = playlist.tracks.iter().find(|t| t.id == track_id).cloned() else { return };
         if self.audio.is_none() {
             self.notify_error("No audio output device available");
             return;
@@ -516,44 +553,92 @@ impl LocalPlaylist {
         if new_playlist || self.shuffle_order.is_empty() {
             self.reshuffle(track_id);
         }
+        let input = match self.local_file(&playlist, &track) {
+            Some(path) => AudioInput::File(path),
+            None => AudioInput::Stream(self.ensure_download(&playlist, &track)),
+        };
         if let Some(a) = self.audio.as_mut() {
-            a.stop();
+            a.load(input);
         }
-
-        let key = track.cache_key();
-        match ytdlp::find_cached(&self.paths.audio_cache(), &key) {
-            Some(path) if !self.downloads.contains_key(&key) => self.start_file(path, cx),
-            _ => {
-                self.ensure_download(&track);
-                self.state = PlayState::Loading { key };
-            }
-        }
-        cx.notify();
-    }
-
-    fn start_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let Some(audio) = self.audio.as_mut() else { return };
-        match audio.load(&path) {
-            Ok(()) => {
-                self.state = PlayState::Playing;
-                self.prefetch_next();
-            }
-            Err(e) => {
-                // A broken cache file: delete it so the next attempt re-downloads.
-                let _ = std::fs::remove_file(&path);
-                self.state = PlayState::Idle;
-                self.notify_error(format!("Playback failed: {e:#}"));
-            }
-        }
+        self.state = PlayState::Playing;
+        self.prefetch_next();
         cx.notify();
     }
 
     fn prefetch_next(&mut self) {
+        let Some(now) = &self.now else { return };
+        let Some(playlist) = self.library.playlist(&now.playlist_id).cloned() else { return };
         if let Some(next) = self.neighbor(1, false)
-            && ytdlp::find_cached(&self.paths.audio_cache(), &next.cache_key()).is_none()
+            && self.local_file(&playlist, &next).is_none()
         {
-            self.ensure_download(&next);
+            self.ensure_download(&playlist, &next);
         }
+    }
+
+    /// Queue every track of the playlist that isn't on disk yet.
+    fn download_all(&mut self, playlist_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(playlist) = self.library.playlist(playlist_id).cloned() else { return };
+        let mut queued = 0;
+        for t in &playlist.tracks {
+            let already = self.download_queue.iter().any(|(_, id)| *id == t.id);
+            if !already && self.local_file(&playlist, t).is_none() {
+                self.download_queue.push_back((playlist.id.clone(), t.id.clone()));
+                queued += 1;
+            }
+        }
+        let msg = if queued == 0 {
+            "All tracks are already downloaded".to_string()
+        } else {
+            format!("Downloading {queued} tracks to {}", storage::playlist_dir(&self.music_root(), &playlist).display())
+        };
+        window.push_notification(Notification::info(msg), cx);
+        cx.notify();
+    }
+
+    /// Keep up to two queued downloads running.
+    fn pump_queue(&mut self) {
+        const PARALLEL: usize = 2;
+        while self.downloads.len() < PARALLEL {
+            let Some((pid, tid)) = self.download_queue.pop_front() else { break };
+            let Some(playlist) = self.library.playlist(&pid).cloned() else { continue };
+            let Some(track) = playlist.tracks.iter().find(|t| t.id == tid).cloned() else { continue };
+            if self.local_file(&playlist, &track).is_none() {
+                self.ensure_download(&playlist, &track);
+            }
+        }
+    }
+
+    /// Rename a playlist's folder to follow its name (debounced, skipped while downloading into it).
+    fn apply_folder_rename(&mut self) {
+        let Some((id, at)) = self.pending_folder_rename.clone() else { return };
+        if at.elapsed() < Duration::from_millis(1200) {
+            return;
+        }
+        let Some(p) = self.library.playlist(&id).cloned() else {
+            self.pending_folder_rename = None;
+            return;
+        };
+        let root = self.music_root();
+        let old_dir = storage::playlist_dir(&root, &p);
+        if self.downloads.keys().any(|k| k.starts_with(&old_dir)) {
+            return; // retry when downloads into it are done
+        }
+        self.pending_folder_rename = None;
+        let folder = storage::unique_folder(&self.library, &id, &p.name);
+        if p.folder.as_deref() == Some(folder.as_str()) {
+            return;
+        }
+        let new_dir = root.join(&folder);
+        if old_dir.exists() && !new_dir.exists() {
+            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                self.notify_error(format!("Couldn't rename playlist folder: {e}"));
+                return;
+            }
+        }
+        if let Some(p) = self.library.playlist_mut(&id) {
+            p.folder = Some(folder);
+        }
+        self.save();
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -565,12 +650,23 @@ impl LocalPlaylist {
         cx.notify();
     }
 
+    fn is_buffering(&self) -> bool {
+        self.state == PlayState::Playing && self.audio.as_ref().is_some_and(|a| a.is_buffering())
+    }
+
+    /// Download progress of the current track, if it's being downloaded.
+    fn current_download(&self) -> Option<f32> {
+        let now = self.now.as_ref()?;
+        let playlist = self.library.playlist(&now.playlist_id)?;
+        let dir = storage::playlist_dir(&self.music_root(), playlist);
+        self.downloads.get(&dir.join(now.track.file_key())).map(|d| d.progress())
+    }
+
     fn toggle_play(&mut self, cx: &mut Context<Self>) {
         match (&self.state, &self.audio) {
             (PlayState::Playing, Some(a)) if a.is_loaded() => {
                 if a.is_paused() { a.play() } else { a.pause() }
             }
-            (PlayState::Loading { .. }, _) => {}
             _ => {
                 // Start the selected playlist from the top (or resume last track).
                 let target = match &self.now {
@@ -681,44 +777,40 @@ impl LocalPlaylist {
         }
 
         // Collect finished downloads.
-        let finished: Vec<(String, Result<PathBuf, String>)> = self
-            .downloads
-            .iter()
-            .filter_map(|(k, d)| d.result.lock().unwrap().clone().map(|r| (k.clone(), r)))
-            .collect();
+        let finished: Vec<(PathBuf, Result<PathBuf, String>)> =
+            self.downloads.iter().filter_map(|(k, d)| d.result().map(|r| (k.clone(), r))).collect();
         for (key, result) in finished {
             self.downloads.remove(&key);
-            let waiting = matches!(&self.state, PlayState::Loading { key: k } if *k == key);
-            match result {
-                Ok(path) if waiting => self.start_file(path, cx),
-                Err(e) if waiting => {
-                    self.state = PlayState::Idle;
-                    let title = self.now.as_ref().map(|n| n.track.title.clone()).unwrap_or_default();
-                    window.push_notification(
-                        Notification::error(format!("Couldn't load \"{title}\": {e}")).autohide(false),
-                        cx,
-                    );
-                }
-                Err(e) => eprintln!("prefetch failed: {e}"),
-                Ok(_) => {}
+            if let Err(e) = result {
+                eprintln!("download failed for {}: {e}", key.display());
             }
+            cx.notify();
         }
+        self.pump_queue();
+        self.apply_folder_rename();
 
-        match &self.state {
-            PlayState::Playing => {
-                if self.audio.as_ref().is_some_and(|a| a.finished()) {
-                    self.skip(1, true, cx);
-                } else if self.seeking.is_none() {
-                    let pos = self.audio.as_ref().map(|a| a.position()).unwrap_or_default();
-                    if let Some(total) = self.total_duration().filter(|d| !d.is_zero()) {
-                        let frac = (pos.as_secs_f32() / total.as_secs_f32()).clamp(0., 1.);
-                        self.seek.update(cx, |s, cx| s.set_value(frac, window, cx));
-                    }
+        // Player events.
+        if let Some(err) = self.audio.as_mut().and_then(|a| a.poll()) {
+            self.state = PlayState::Idle;
+            let title = self.now.as_ref().map(|n| n.track.title.clone()).unwrap_or_default();
+            window.push_notification(
+                Notification::error(format!("Couldn't play \"{title}\": {err}")).autohide(false),
+                cx,
+            );
+        }
+        if self.state == PlayState::Playing {
+            if self.audio.as_ref().is_some_and(|a| a.finished()) {
+                self.skip(1, true, cx);
+            } else if self.seeking.is_none() {
+                let pos = self.audio.as_ref().map(|a| a.position()).unwrap_or_default();
+                if let Some(total) = self.total_duration().filter(|d| !d.is_zero()) {
+                    let frac = (pos.as_secs_f32() / total.as_secs_f32()).clamp(0., 1.);
+                    self.seek.update(cx, |s, cx| s.set_value(frac, window, cx));
                 }
-                cx.notify();
             }
-            PlayState::Loading { .. } => cx.notify(),
-            PlayState::Idle => {}
+            cx.notify();
+        } else if !self.downloads.is_empty() {
+            cx.notify();
         }
     }
 }
@@ -893,6 +985,8 @@ impl LocalPlaylist {
         let count = playlist.tracks.len();
         let total: u32 = playlist.tracks.iter().filter_map(|t| t.duration_secs).sum();
         let pid = playlist.id.clone();
+        let playlist_id_for_dl = playlist.id.clone();
+        let queue_len = self.download_queue.iter().filter(|(p, _)| *p == playlist.id).count();
 
         let list = uniform_list(
             "tracks",
@@ -901,7 +995,8 @@ impl LocalPlaylist {
                 let theme = cx.theme().clone();
                 let Some(p) = this.selected_playlist() else { return Vec::new() };
                 let now_id = this.now.as_ref().map(|n| n.track.id.clone());
-                let loading = matches!(this.state, PlayState::Loading { .. });
+                let loading = this.is_buffering();
+                let dir = storage::playlist_dir(&this.music_root(), p);
                 let paused = this.audio.as_ref().is_some_and(|a| a.is_paused());
                 range
                     .filter_map(|ix| p.tracks.get(ix).map(|t| (ix, t.clone())))
@@ -909,7 +1004,7 @@ impl LocalPlaylist {
                         let current = now_id.as_deref() == Some(&t.id);
                         let (pid, tid) = (p.id.clone(), t.id.clone());
                         let (tid_up, tid_down, tid_rm) = (t.id.clone(), t.id.clone(), t.id.clone());
-                        let progress = this.downloads.get(&t.cache_key()).map(|d| d.progress());
+                        let progress = this.downloads.get(&dir.join(t.file_key())).map(|d| d.progress());
                         h_flex()
                             .id(ix)
                             .w_full()
@@ -1047,6 +1142,21 @@ impl LocalPlaylist {
                                         }
                                     })),
                             )
+                            .child({
+                                let pid = playlist_id_for_dl.clone();
+                                Button::new("download-all")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::HardDriveDownload)
+                                    .tooltip(if queue_len > 0 {
+                                        format!("Downloading… {queue_len} queued")
+                                    } else {
+                                        "Download all tracks for offline playback".to_string()
+                                    })
+                                    .loading(queue_len > 0)
+                                    .disabled(count == 0)
+                                    .on_click(cx.listener(move |this, _, window, cx| this.download_all(&pid, window, cx)))
+                            })
                             .child(
                                 Button::new("delete-playlist")
                                     .small()
@@ -1123,10 +1233,9 @@ impl LocalPlaylist {
         let settings = self.library.settings.clone();
         let playing = matches!(self.state, PlayState::Playing)
             && self.audio.as_ref().is_some_and(|a| !a.is_paused());
-        let loading = match &self.state {
-            PlayState::Loading { key } => Some(self.downloads.get(key).map(|d| d.progress()).unwrap_or(0.)),
-            _ => None,
-        };
+        let buffering = self.is_buffering();
+        let download = self.current_download();
+        let loading = buffering.then(|| download.unwrap_or(0.));
         let total = self.total_duration();
         let pos = match (self.seeking, total) {
             (Some(frac), Some(t)) => t.mul_f32(frac),
@@ -1140,9 +1249,12 @@ impl LocalPlaylist {
                 .child(div().truncate().font_medium().child(n.track.title.clone()))
                 .child(
                     div().text_xs().truncate().text_color(theme.muted_foreground).child(match loading {
-                        Some(p) if p > 0. => format!("Downloading… {:.0}%", p * 100.),
-                        Some(_) => "Fetching audio…".to_string(),
-                        None => format!("{} · {}", n.track.artist, n.track.platform.label()),
+                        Some(p) if p > 0. => format!("Buffering… (downloaded {:.0}%)", p * 100.),
+                        Some(_) => "Starting stream…".to_string(),
+                        None => match download {
+                            Some(p) => format!("{} · streaming, {:.0}% downloaded", n.track.artist, p * 100.),
+                            None => format!("{} · {}", n.track.artist, n.track.platform.label()),
+                        },
                     }),
                 ),
             None => v_flex().child(div().text_color(theme.muted_foreground).child("Nothing playing")),

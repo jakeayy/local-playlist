@@ -594,28 +594,170 @@ impl LocalPlaylist {
                                     }),
                             ),
                     )
+                    .child(self.render_storage(cx)),
+            )
+    }
+
+    fn change_music_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.downloads.is_empty() {
+            window.push_notification(Notification::warning("Wait for downloads to finish before moving the music folder."), cx);
+            return;
+        }
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose music folder".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(new_root) = paths.into_iter().next() else { return };
+            let _ = this.update_in(cx, |this, window, cx| this.set_music_dir(Some(new_root), window, cx));
+        })
+        .detach();
+    }
+
+    /// Switch the music root, moving existing playlist folders over.
+    fn set_music_dir(&mut self, dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let old_root = self.music_root();
+        let new_root = dir.clone().unwrap_or_else(storage::default_music_root);
+        if old_root == new_root {
+            return;
+        }
+        if let Some(a) = self.audio.as_mut() {
+            a.stop();
+        }
+        self.state = PlayState::Idle;
+        let folders: Vec<String> = self.library.playlists.iter().filter_map(|p| p.folder.clone()).collect();
+        self.library.settings.music_dir = dir;
+        self.save();
+        self.moving_music = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let (old, new) = (old_root.clone(), new_root.clone());
+            let errors = cx
+                .background_spawn(async move {
+                    let mut errors = Vec::new();
+                    for f in folders {
+                        if let Err(e) = storage::move_dir(&old.join(&f), &new.join(&f)) {
+                            errors.push(format!("{f}: {e:#}"));
+                        }
+                    }
+                    let _ = std::fs::remove_dir(&old); // only if now empty
+                    errors
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.moving_music = false;
+                let note = if errors.is_empty() {
+                    Notification::success(format!("Music folder is now {}", new_root.display()))
+                } else {
+                    Notification::error(format!("Some folders couldn't be moved: {}", errors.join("; "))).autohide(false)
+                };
+                window.push_notification(note, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_storage(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let root = self.music_root();
+        let removed = storage::removed_dir(&self.paths);
+        let used = storage::dir_size(&removed) as f64 / 1e6;
+        let limit = self.library.settings.removed_cache_mb;
+        v_flex()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().text_lg().font_semibold().child("Storage"))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(
+                        "Downloaded tracks are saved per playlist as normal audio files, so they play offline and in other players.",
+                    )),
+            )
+            .child(
+                v_flex()
+                    .gap_3()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(theme.border)
                     .child(
-                        v_flex()
+                        h_flex()
                             .gap_3()
-                            .child(section(
-                                "Storage",
-                                format!(
-                                    "Library: {}  ·  Audio cache: {}",
-                                    self.paths.library_file().display(),
-                                    self.paths.audio_cache().display()
-                                )
-                                .into(),
-                            ))
                             .child(
-                                h_flex().child(
-                                    Button::new("clear-cache")
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(div().font_medium().child("Music folder"))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).truncate().child(format!(
+                                        "{}/<Playlist name>/<Platform>-<id>.m4a",
+                                        root.display()
+                                    ))),
+                            )
+                            .when(self.library.settings.music_dir.is_some(), |d| {
+                                d.child(
+                                    Button::new("music-default")
+                                        .ghost()
                                         .small()
-                                        .icon(IconName::Trash)
-                                        .label("Clear audio cache")
-                                        .on_click(cx.listener(|this, _, window, cx| this.clear_cache(window, cx))),
-                                ),
+                                        .label("Use default")
+                                        .on_click(cx.listener(|this, _, window, cx| this.set_music_dir(None, window, cx))),
+                                )
+                            })
+                            .child(
+                                Button::new("music-change")
+                                    .small()
+                                    .icon(IconName::FolderOpen)
+                                    .label("Change…")
+                                    .loading(self.moving_music)
+                                    .on_click(cx.listener(|this, _, window, cx| this.change_music_dir(window, cx))),
                             ),
+                    )
+                    .child(div().h(px(1.)).bg(theme.border))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(div().font_medium().child("Removed tracks"))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!(
+                                        "Files of tracks you remove are kept here so re-adding them is instant. Using {used:.0} MB of {limit} MB; oldest go first."
+                                    ))),
+                            )
+                            .child(
+                                Button::new("clear-removed")
+                                    .small()
+                                    .icon(IconName::Trash)
+                                    .label("Clear")
+                                    .on_click(cx.listener(|this, _, window, cx| this.clear_removed_cache(window, cx))),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().text_sm().text_color(theme.muted_foreground).child("Limit:"))
+                            .children([512u64, 1024, 2048, 5120, 10240].map(|mb| {
+                                let label = if mb < 1024 { format!("{mb} MB") } else { format!("{} GB", mb / 1024) };
+                                Button::new(("limit", mb as usize))
+                                    .small()
+                                    .label(label)
+                                    .when(limit == mb, |b| b.primary())
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.library.settings.removed_cache_mb = mb;
+                                        this.save();
+                                        storage::enforce_limit(&storage::removed_dir(&this.paths), this.removed_limit());
+                                        cx.notify();
+                                    }))
+                            })),
                     ),
             )
+            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
+                "Library file: {}",
+                self.paths.library_file().display()
+            )))
     }
 }

@@ -67,14 +67,14 @@ impl Track {
         }
     }
 
-    /// Stable key for the audio cache.
-    pub fn cache_key(&self) -> String {
+    /// File name stem for this track's audio: `<Platform>-<id>`.
+    pub fn file_key(&self) -> String {
         let safe: String = self
             .source_id
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
             .collect();
-        format!("{}-{}", self.platform.short(), safe)
+        format!("{}-{}", self.platform.label(), safe)
     }
 }
 
@@ -82,13 +82,16 @@ impl Track {
 pub struct Playlist {
     pub id: String,
     pub name: String,
+    /// Folder name under the music root (follows `name`, kept unique).
+    #[serde(default)]
+    pub folder: Option<String>,
     #[serde(default)]
     pub tracks: Vec<Track>,
 }
 
 impl Playlist {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { id: new_id(), name: name.into(), tracks: Vec::new() }
+        Self { id: new_id(), name: name.into(), folder: None, tracks: Vec::new() }
     }
 }
 
@@ -102,6 +105,10 @@ pub struct Settings {
     pub ytdlp_source: crate::ytdlp::Source,
     /// Use the app-managed QuickJS, or JavaScript runtimes on PATH.
     pub js_source: crate::ytdlp::Source,
+    /// Root folder for playlist folders; `None` = `<Music>/local-playlist`.
+    pub music_dir: Option<PathBuf>,
+    /// Size limit of the removed-tracks cache, in MB.
+    pub removed_cache_mb: u64,
 }
 
 impl Default for Settings {
@@ -112,6 +119,8 @@ impl Default for Settings {
             repeat: RepeatMode::Off,
             ytdlp_source: Default::default(),
             js_source: Default::default(),
+            music_dir: None,
+            removed_cache_mb: 2048,
         }
     }
 }
@@ -189,16 +198,11 @@ impl Paths {
             .context("could not determine home directory")?;
         let paths = Self { data: dirs.data_dir().to_path_buf(), cache: dirs.cache_dir().to_path_buf() };
         std::fs::create_dir_all(&paths.data)?;
-        std::fs::create_dir_all(paths.audio_cache())?;
         Ok(paths)
     }
 
     pub fn library_file(&self) -> PathBuf {
         self.data.join("library.json")
-    }
-
-    pub fn audio_cache(&self) -> PathBuf {
-        self.cache.join("audio")
     }
 
     pub fn soundcloud_client_id_file(&self) -> PathBuf {

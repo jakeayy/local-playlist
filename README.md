@@ -14,8 +14,17 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
 - **Import** whole collections as a new playlist, without logging in:
   - YouTube / YouTube Music public or unlisted playlists
   - SoundCloud sets/albums, a profile's tracks, and a profile's public likes (`/likes`)
-- **Built-in playback:** play/pause, next/previous, seek, volume, shuffle, and repeat
-  (playlist / track). The next track is prefetched so playback continues without a gap.
+- **Built-in playback with streaming:** playback starts after about 3 s of audio has
+  downloaded instead of waiting for the whole file, and you can seek while it's still
+  downloading. Play/pause, next/previous, volume, shuffle, and repeat (playlist / track)
+  are all there. The next track is prefetched so playback continues without a gap.
+- **Real files on disk:** tracks are saved as
+  `<Music>/local-playlist/<Playlist name>/<Platform>-<id>.m4a`, so they play offline and
+  in any player. "Download all" fetches a whole playlist. Renaming a playlist renames its
+  folder.
+- **Removed-tracks cache:** removing a track moves its file to a size-limited cache
+  (2 GB by default; oldest files go first). Re-adding the track restores it instantly.
+  The same song in several playlists is hard-linked or copied, never downloaded twice.
 - **Optional accounts** for private playlists, YouTube *Liked videos* / *Liked music* /
   *Watch later*, and your SoundCloud likes:
   - **Log in** opens the platform's normal sign-in page in a private (incognito) webview
@@ -42,8 +51,9 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
 - Metadata comes from each platform's public web endpoints, the same ones their websites
   use for logged-out visitors: YouTube InnerTube and oEmbed, and SoundCloud api-v2 with the
   public web `client_id`. Unless you log in, no cookies are sent or stored.
-- Audio is downloaded by yt-dlp into `~/.cache/local-playlist/audio/` and played locally.
-  Settings → Storage → "Clear audio cache" empties it.
+- Audio is downloaded by yt-dlp into your music folder (configurable in Settings → Storage)
+  and played locally. Removed tracks wait in `~/.cache/local-playlist/removed/` up to the
+  size limit.
 - The only network destinations are YouTube, SoundCloud, and their CDNs. GitHub is
   contacted only to download or update components.
 
@@ -79,4 +89,6 @@ Layout:
 | `src/ytdlp.rs` | Components (yt-dlp build, QuickJS), metadata fallback, audio download |
 | `src/login.rs` | Webview login helper process (`local-playlist --login <platform>`) |
 | `src/secrets.rs` | Encrypted cookie storage, cookie parsing |
-| `src/audio.rs` | rodio playback wrapper |
+| `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
+| `src/download.rs` | Shared download state |
+| `src/storage.rs` | Music folder layout, removed-tracks cache |
