@@ -90,6 +90,9 @@ pub struct LocalPlaylist {
     /// Platform whose "paste cookies" editor is open.
     cookie_target: Option<Platform>,
     cookie_input: Entity<TextareaState>,
+    /// YouTube channels of the logged-in account (loaded when the picker opens).
+    yt_channels: Option<Result<Vec<sources::youtube::Channel>, String>>,
+    channel_picker_open: bool,
     confirm_delete: bool,
     pending_notes: Vec<Notification>,
 
@@ -236,6 +239,8 @@ impl LocalPlaylist {
             logging_in: None,
             cookie_target: None,
             cookie_input,
+            yt_channels: None,
+            channel_picker_open: false,
             confirm_delete: false,
             pending_notes,
             list_scroll: UniformListScrollHandle::new(),

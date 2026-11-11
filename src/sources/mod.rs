@@ -171,7 +171,7 @@ pub fn resolve(
     ytdlp: &YtDlp,
     creds: &Credentials,
 ) -> Result<Resolved> {
-    let yt_auth = creds.get(Platform::YouTube);
+    let yt_auth = creds.yt_auth();
     let sc_auth = creds.get(Platform::SoundCloud).and_then(|c| find(c, "oauth_token"));
     let native = match link {
         Link::YouTubeVideo { list: Some(list), .. } if as_collection => {
@@ -201,7 +201,7 @@ pub fn resolve(
         Err(err) => {
             eprintln!("native resolve failed for {link:?}: {err:#}; trying yt-dlp");
             let cookies = match link.platform() {
-                Platform::YouTube => yt_auth,
+                Platform::YouTube => creds.get(Platform::YouTube),
                 Platform::SoundCloud => creds.get(Platform::SoundCloud),
             };
             ytdlp_fallback(link, as_collection, ytdlp, cookies).map_err(|e2| {

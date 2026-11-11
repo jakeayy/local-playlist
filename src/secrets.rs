@@ -56,6 +56,9 @@ impl StoredCookie {
 pub struct Credentials {
     #[serde(default)]
     pub sessions: BTreeMap<String, Vec<StoredCookie>>,
+    /// Selected YouTube channel (Brand Account); `None` = default channel.
+    #[serde(default)]
+    pub youtube_channel: Option<crate::sources::youtube::Channel>,
 }
 
 fn platform_key(p: Platform) -> &'static str {
@@ -76,6 +79,16 @@ impl Credentials {
 
     pub fn remove(&mut self, p: Platform) {
         self.sessions.remove(platform_key(p));
+        if p == Platform::YouTube {
+            self.youtube_channel = None;
+        }
+    }
+
+    pub fn yt_auth(&self) -> Option<crate::sources::youtube::YtAuth<'_>> {
+        Some(crate::sources::youtube::YtAuth {
+            cookies: self.get(Platform::YouTube)?,
+            page_id: self.youtube_channel.as_ref().and_then(|c| c.page_id.as_deref()),
+        })
     }
 }
 

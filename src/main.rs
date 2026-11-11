@@ -67,7 +67,24 @@ fn main() {
                 sources::Link::YouTubePlaylist { list } | sources::Link::YouTubeVideo { list: Some(list), .. } => list,
                 other => anyhow::bail!("not a YouTube playlist link: {other:?}"),
             };
-            sources::youtube::diagnose(&list, creds.get(model::Platform::YouTube))
+            let mut creds = creds;
+            // Optional 3rd arg: act as the channel with this name.
+            if let (Some(name), Some(cookies)) = (args.get(3), creds.get(model::Platform::YouTube)) {
+                let ch = sources::youtube::channels(cookies)?;
+                creds.youtube_channel = ch.into_iter().find(|c| &c.name == name);
+                anyhow::ensure!(creds.youtube_channel.is_some(), "no channel named {name}");
+            }
+            let mut out = sources::youtube::diagnose(&list, creds.yt_auth())?;
+            // Then run the real import path.
+            let ytdlp = ytdlp::YtDlp::new(&paths, Default::default(), Default::default());
+            match sources::resolve(&sources::parse_link(&url)?, true, &paths, &ytdlp, &creds) {
+                Ok(sources::Resolved::Collection { title, tracks }) => {
+                    out += &format!("import: \"{title}\" with {} tracks\n", tracks.len())
+                }
+                Ok(sources::Resolved::Track(_)) => out += "import: single track\n",
+                Err(e) => out += &format!("import error: {e:#}\n"),
+            }
+            Ok(out)
         })();
         match result {
             Ok(s) => print!("{s}"),

@@ -153,7 +153,42 @@ impl LocalPlaylist {
         .detach();
     }
 
+    fn toggle_channel_picker(&mut self, cx: &mut Context<Self>) {
+        self.channel_picker_open = !self.channel_picker_open;
+        if self.channel_picker_open && !matches!(self.yt_channels, Some(Ok(_))) {
+            self.yt_channels = None;
+            let cookies = self.creds.get(Platform::YouTube).map(<[_]>::to_vec);
+            cx.spawn(async move |this, cx| {
+                let result = cx
+                    .background_spawn(async move {
+                        let cookies = cookies.ok_or_else(|| "Not logged in".to_string())?;
+                        sources::youtube::channels(&cookies).map_err(|e| format!("{e:#}"))
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.yt_channels = Some(result);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    fn select_channel(&mut self, channel: sources::youtube::Channel, window: &mut Window, cx: &mut Context<Self>) {
+        let name = channel.name.clone();
+        self.creds.youtube_channel = Some(channel);
+        self.persist_creds();
+        self.channel_picker_open = false;
+        window.push_notification(Notification::success(format!("Using YouTube channel \"{name}\"")), cx);
+        cx.notify();
+    }
+
     fn logout(&mut self, p: Platform, window: &mut Window, cx: &mut Context<Self>) {
+        if p == Platform::YouTube {
+            self.yt_channels = None;
+            self.channel_picker_open = false;
+        }
         self.creds.remove(p);
         self.persist_creds();
         window.push_notification(
@@ -333,6 +368,53 @@ impl LocalPlaylist {
                             )
                         }),
                 )
+                .when(logged_in && p == Platform::YouTube, |d| {
+                    let current = self.creds.youtube_channel.as_ref();
+                    let label = current.map(|c| c.name.clone()).unwrap_or_else(|| "Default channel".into());
+                    d.child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().text_sm().text_color(theme.muted_foreground).child("Channel:"))
+                            .child(div().text_sm().font_medium().truncate().child(label))
+                            .child(
+                                Button::new("yt-channel")
+                                    .ghost()
+                                    .small()
+                                    .label(if self.channel_picker_open { "Close" } else { "Change" })
+                                    .tooltip("For accounts with several channels (Brand Accounts)")
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_channel_picker(cx))),
+                            ),
+                    )
+                    .when(self.channel_picker_open, |d| {
+                        let content = match &self.yt_channels {
+                            None => div().text_sm().text_color(theme.muted_foreground).child("Loading channels…").into_any_element(),
+                            Some(Err(e)) => div().text_sm().text_color(theme.danger).child(e.clone()).into_any_element(),
+                            Some(Ok(list)) => v_flex()
+                                .gap_0p5()
+                                .children(list.iter().enumerate().map(|(i, ch)| {
+                                    let selected = current.map(|c| &c.page_id) == Some(&ch.page_id)
+                                        || (current.is_none() && ch.page_id.is_none() && i == 0);
+                                    let ch2 = ch.clone();
+                                    h_flex()
+                                        .id(("channel", i))
+                                        .gap_2()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .when(selected, |d| d.bg(theme.list_active))
+                                        .hover(|d| d.bg(theme.list_hover))
+                                        .child(div().text_sm().truncate().child(ch.name.replace('\n', " ")))
+                                        .child(div().text_xs().text_color(theme.muted_foreground).child(ch.handle.clone()))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_channel(ch2.clone(), window, cx)
+                                        }))
+                                }))
+                                .into_any_element(),
+                        };
+                        d.child(content)
+                    })
+                })
                 .when(logged_in, |d| {
                     d.child(
                         h_flex()
@@ -354,7 +436,7 @@ impl LocalPlaylist {
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child("Private playlists: paste their link in \"Import playlist\" or the Add field, like any other."),
+                            .child("Private playlists: paste their link in \"Import playlist\" or the Add field. Playlists on your other channels are found automatically."),
                     )
                 })
                 .when(editing && !logged_in, |d| {

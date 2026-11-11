@@ -49,7 +49,14 @@ fn sapisid_hash(cookies: &[StoredCookie]) -> Option<String> {
 
 const ORIGIN: &str = "https://www.youtube.com";
 
-fn innertube(endpoint: &str, mut body: Value, auth: Option<&[StoredCookie]>) -> Result<Value> {
+/// A YouTube session: cookies plus the channel (Brand Account) to act as.
+#[derive(Clone, Copy)]
+pub struct YtAuth<'a> {
+    pub cookies: &'a [StoredCookie],
+    pub page_id: Option<&'a str>,
+}
+
+fn innertube(endpoint: &str, mut body: Value, auth: Option<YtAuth<'_>>) -> Result<Value> {
     body["context"] = json!({
         "client": { "clientName": "WEB", "clientVersion": CLIENT_VERSION, "hl": "en", "gl": "US" }
     });
@@ -59,13 +66,18 @@ fn innertube(endpoint: &str, mut body: Value, auth: Option<&[StoredCookie]>) -> 
         .header("X-YouTube-Client-Name", "1")
         .header("X-YouTube-Client-Version", CLIENT_VERSION)
         .header("Origin", ORIGIN);
-    if let Some(cookies) = auth {
+    if let Some(auth) = auth {
         req = req
-            .header("Cookie", cookie_header(cookies, "www.youtube.com"))
+            .header("Cookie", cookie_header(auth.cookies, "www.youtube.com"))
             .header("X-Origin", ORIGIN)
             .header("X-Goog-AuthUser", "0");
-        if let Some(h) = sapisid_hash(cookies) {
+        if let Some(h) = sapisid_hash(auth.cookies) {
             req = req.header("Authorization", h);
+        }
+        if let Some(page) = auth.page_id {
+            // Act as a Brand Account channel, like the web app's channel switcher.
+            req = req.header("X-Goog-PageId", page);
+            body["context"]["user"] = json!({ "onBehalfOfUser": page });
         }
     }
     let mut resp = req.send_json(&body)?;
@@ -110,7 +122,7 @@ fn video_oembed(id: &str) -> Result<Track> {
 /// Fetch a playlist: (title, tracks). Public/unlisted playlists are read
 /// anonymously; the session (if any) is only used for personal lists or when
 /// the anonymous request fails (e.g. a private playlist).
-pub fn playlist(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, Vec<Track>)> {
+pub fn playlist(list: &str, auth: Option<YtAuth<'_>>) -> Result<(String, Vec<Track>)> {
     let list = list.strip_prefix("VL").unwrap_or(list);
     if is_personal_list(list) {
         let Some(auth) = auth else {
@@ -123,7 +135,13 @@ pub fn playlist(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, Ve
     match playlist_with(list, None) {
         Ok(r) => Ok(r),
         // Report the authenticated attempt's error: it's the informative one.
-        Err(_) if auth.is_some() => playlist_with(list, auth),
+        Err(_) if let Some(a) = auth => match playlist_with(list, auth) {
+            Ok(r) => Ok(r),
+            // The playlist may belong to another channel (Brand Account) of this login.
+            Err(e) => other_channels(a).into_iter().find_map(|page| {
+                playlist_with(list, Some(YtAuth { cookies: a.cookies, page_id: page.as_deref() })).ok()
+            }).ok_or(e),
+        },
         Err(e) => Err(e),
     }
 }
@@ -137,7 +155,7 @@ pub fn personal_list_name(list: &str) -> &'static str {
     }
 }
 
-fn playlist_with(list: &str, auth: Option<&[StoredCookie]>) -> Result<(String, Vec<Track>)> {
+fn playlist_with(list: &str, auth: Option<YtAuth<'_>>) -> Result<(String, Vec<Track>)> {
     let browse_id = format!("VL{list}");
     let first = innertube("browse", json!({ "browseId": browse_id }), auth)?;
     if auth.is_some() && is_logged_out(&first) {
@@ -183,13 +201,14 @@ pub fn is_logged_out(v: &Value) -> bool {
 }
 
 /// Debug helper: what YouTube sees for a browse request (no secrets printed).
-pub fn diagnose(list: &str, auth: Option<&[StoredCookie]>) -> Result<String> {
+pub fn diagnose(list: &str, auth: Option<YtAuth<'_>>) -> Result<String> {
     let mut out = String::new();
-    if let Some(c) = auth {
-        let mut names: Vec<&str> = c.iter().map(|c| c.name.as_str()).collect();
+    if let Some(a) = auth {
+        let mut names: Vec<&str> = a.cookies.iter().map(|c| c.name.as_str()).collect();
         names.sort();
         out += &format!("cookies: {}\n", names.join(", "));
-        out += &format!("authorization header: {}\n", sapisid_hash(c).map(|h| h.split(' ').step_by(2).collect::<Vec<_>>().join(", ")).unwrap_or("none".into()));
+        out += &format!("acting as brand channel: {}\n", a.page_id.is_some());
+        out += &format!("authorization header: {}\n", sapisid_hash(a.cookies).map(|h| h.split(' ').step_by(2).collect::<Vec<_>>().join(", ")).unwrap_or("none".into()));
     } else {
         out += "no saved YouTube session\n";
     }
@@ -204,6 +223,16 @@ pub fn diagnose(list: &str, auth: Option<&[StoredCookie]>) -> Result<String> {
     let mut tracks = Vec::new();
     collect_page(v.get("contents").unwrap_or(&Value::Null), &mut tracks);
     out += &format!("first page tracks: {}\n", tracks.len());
+    if let Some(a) = auth {
+        match channels(a.cookies) {
+            Ok(ch) => {
+                for c in ch {
+                    out += &format!("channel: {} {} brand={}\n", c.name, c.handle, c.page_id.is_some());
+                }
+            }
+            Err(e) => out += &format!("channels: error {e:#}\n"),
+        }
+    }
     if auth.is_some() {
         let lib = innertube("browse", json!({ "browseId": "FEplaylist_aggregation" }), auth)?;
         let ids = own_playlist_ids(&lib);
@@ -213,6 +242,70 @@ pub fn diagnose(list: &str, auth: Option<&[StoredCookie]>) -> Result<String> {
         out += &format!("library ids matching this link: {matches:?}\n");
     }
     Ok(out)
+}
+
+/// A channel the logged-in Google account can act as.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Channel {
+    pub name: String,
+    #[serde(default)]
+    pub handle: String,
+    /// Brand-account page id; `None` for the account's default channel.
+    #[serde(default)]
+    pub page_id: Option<String>,
+}
+
+/// Page ids of the session's channels other than the active one.
+fn other_channels(auth: YtAuth<'_>) -> Vec<Option<String>> {
+    channels(auth.cookies)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.page_id)
+        .filter(|p| p.as_deref() != auth.page_id)
+        .fold(Vec::new(), |mut v, p| {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+            v
+        })
+}
+
+/// List the channels available to this session (YouTube's account switcher).
+pub fn channels(auth: &[StoredCookie]) -> Result<Vec<Channel>> {
+    let v = innertube("account/accounts_list", json!({}), Some(YtAuth { cookies: auth, page_id: None }))?;
+    let mut out = Vec::new();
+    fn walk(v: &Value, out: &mut Vec<Channel>) {
+        match v {
+            Value::Object(m) => {
+                if let Some(item) = m.get("accountItem") {
+                    let name = runs_text(&item["accountName"]).unwrap_or_default();
+                    let handle = runs_text(&item["channelHandle"]).unwrap_or_default();
+                    let page_id = find_key(item, "pageId").and_then(Value::as_str).map(str::to_string);
+                    if !name.trim().is_empty() {
+                        out.push(Channel { name, handle, page_id });
+                    }
+                    return;
+                }
+                m.values().for_each(|c| walk(c, out));
+            }
+            Value::Array(a) => a.iter().for_each(|c| walk(c, out)),
+            _ => {}
+        }
+    }
+    walk(&v, &mut out);
+    out.dedup();
+    if out.is_empty() {
+        bail!("YouTube returned no channels for this login");
+    }
+    Ok(out)
+}
+
+fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    match v {
+        Value::Object(m) => m.get(key).or_else(|| m.values().find_map(|c| find_key(c, key))),
+        Value::Array(a) => a.iter().find_map(|c| find_key(c, key)),
+        _ => None,
+    }
 }
 
 /// Playlist ids shown in a "Playlists" library page.
