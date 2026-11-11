@@ -1,48 +1,6 @@
-//! Local Playlist — a privacy-friendly, local-first music player for links
-//! from YouTube / YouTube Music and SoundCloud.
+//! Local Playlist entry point: desktop app, login helper, diagnostics or server.
 
-mod app;
-mod audio;
-mod download;
-mod login;
-mod model;
-mod secrets;
-mod sources;
-mod storage;
-mod theme;
-mod ytdlp;
-
-use std::borrow::Cow;
-
-use gpui_kit::*;
-
-gpui_kit::assets::icon_assets!(
-    AppIcons,
-    [
-        ArrowDown, ArrowUp, Monitor, Moon, Sun, CircleAlert, CircleCheck, CircleQuestionMark, CircleStop, Disc3, Download, FolderOpen, HardDriveDownload, Import, Link, ListMusic, LoaderCircle, LogIn,
-        LogOut, Pause, Play, Plus, RefreshCw, Repeat, Repeat1, Settings, Shuffle, SkipBack, SkipForward,
-        Trash, Volume2, VolumeX, X
-    ]
-);
-
-struct AppAssets;
-
-impl AssetSource for AppAssets {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some(bytes) = AppIcons.load(path)? {
-            return Ok(Some(bytes));
-        }
-        gpui_kit::assets::Assets.load(path)
-    }
-
-    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut paths = gpui_kit::assets::Assets.list(path)?;
-        paths.extend(AppIcons.list(path)?);
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
-    }
-}
+use local_playlist::{login, model, secrets, server, sources, ytdlp};
 
 fn main() {
     // Webview login helper process (see login.rs).
@@ -84,7 +42,7 @@ fn main() {
                 Ok(sources::Resolved::Collection { title, tracks }) => {
                     out += &format!("import: \"{title}\" with {} tracks\n", tracks.len())
                 }
-                Ok(sources::Resolved::Track(_)) => out += "import: single track\n",
+                Ok(sources::Resolved::Track { .. }) => out += "import: single track\n",
                 Err(e) => out += &format!("import error: {e:#}\n"),
             }
             Ok(out)
@@ -96,24 +54,13 @@ fn main() {
         return;
     }
 
-    gpui_kit::application().with_assets(AppAssets).run(move |cx| {
-        gpui_kit::init(cx);
-        theme::init(cx);
-        let appearance = model::Library::load(&paths.library_file()).map(|l| l.settings.appearance).unwrap_or_default();
-        theme::apply(appearance, None, cx);
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
+    if matches!(args.get(1).map(String::as_str), Some("--server" | "--headless")) {
+        if let Err(e) = server::run(&args[2..]) {
+            eprintln!("local-playlist: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
-        let options = WindowOptions {
-            titlebar: Some(TitlebarOptions { title: Some("Local Playlist".into()), ..Default::default() }),
-            window_bounds: Some(WindowBounds::centered(size(px(1120.), px(740.)), cx)),
-            window_min_size: Some(size(px(820.), px(520.))),
-            app_id: Some("local-playlist".into()),
-            ..Default::default()
-        };
-        gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| app::LocalPlaylist::new(paths.clone(), window, cx))
-        })
-        .expect("failed to open window");
-        cx.activate(true);
-    });
+    local_playlist::run_desktop(paths);
 }

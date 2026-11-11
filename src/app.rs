@@ -82,7 +82,7 @@ pub struct LocalPlaylist {
     /// File stems present in each playlist folder (rescanned lazily).
     on_disk: HashMap<PathBuf, std::collections::HashSet<String>>,
     /// Playlist whose folder should follow its (edited) name, and when it was last edited.
-    pending_folder_rename: Option<(String, std::time::Instant)>,
+    pending_folder_rename: Option<(String, f64)>,
 
     url_input: Entity<InputState>,
     import_input: Entity<InputState>,
@@ -107,6 +107,11 @@ pub struct LocalPlaylist {
     yt_channels: Option<Result<Vec<sources::youtube::Channel>, String>>,
     channel_picker_open: bool,
     moving_music: bool,
+    /// Web: the server wants its access password.
+    server_locked: bool,
+    server_password: Entity<InputState>,
+    server_login_busy: bool,
+    server_error: Option<String>,
     confirm_delete: bool,
     pending_notes: Vec<Notification>,
 
@@ -156,6 +161,7 @@ impl LocalPlaylist {
         let import_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL"));
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name"));
+        let server_password = cx.new(|cx| InputState::new(window, cx).placeholder("Server password").masked(true));
         let cookie_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Paste a Netscape cookies.txt export, or a Cookie header (name=value; name2=value2)")
@@ -171,6 +177,11 @@ impl LocalPlaylist {
                     this.add_from_input(window, cx);
                 }
             }),
+            cx.subscribe_in(&server_password, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.server_login(window, cx);
+                }
+            }),
             cx.subscribe_in(&import_input, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
                     this.import_from_input(window, cx);
@@ -184,7 +195,9 @@ impl LocalPlaylist {
                         && p.name != name
                     {
                         p.name = name;
-                        this.pending_folder_rename = Some((id.clone(), std::time::Instant::now()));
+                        if !crate::WEB {
+                            this.pending_folder_rename = Some((id.clone(), crate::now_ms()));
+                        }
                         this.save();
                         cx.notify();
                     }
@@ -276,6 +289,10 @@ impl LocalPlaylist {
             yt_channels: None,
             channel_picker_open: false,
             moving_music: false,
+            server_locked: crate::WEB,
+            server_password,
+            server_login_busy: false,
+            server_error: None,
             confirm_delete: false,
             pending_notes,
             list_scroll: UniformListScrollHandle::new(),
@@ -284,6 +301,15 @@ impl LocalPlaylist {
         };
         this.select(selected, window, cx);
         this.refresh_components(cx);
+        #[cfg(target_family = "wasm")]
+        cx.spawn(async move |this, cx| {
+            let ok = crate::web::api::check().await;
+            let _ = this.update(cx, |this, cx| {
+                this.server_locked = !ok;
+                cx.notify();
+            });
+        })
+        .detach();
         this
     }
 
@@ -334,7 +360,7 @@ impl LocalPlaylist {
             self.stop(cx);
         }
         let idx = self.library.playlists.iter().position(|p| p.id == id).unwrap_or(0);
-        if let Some(p) = self.library.playlist(&id).cloned() {
+        if let Some(p) = self.library.playlist(&id).cloned().filter(|_| !crate::WEB) {
             let (paths, root, limit) = (self.paths.clone(), self.music_root(), self.removed_limit());
             std::thread::spawn(move || storage::retire_playlist(&paths, &root, &p, limit));
         }
@@ -358,7 +384,7 @@ impl LocalPlaylist {
         {
             p.tracks.retain(|t| t.id != track_id);
             // Keep the file if the same song is still in this playlist.
-            if !p.tracks.iter().any(|t| t.file_key() == track.file_key()) {
+            if !crate::WEB && !p.tracks.iter().any(|t| t.file_key() == track.file_key()) {
                 storage::retire(&self.paths, &root, p, &track, limit);
             }
         }
@@ -406,10 +432,9 @@ impl LocalPlaylist {
 
         let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
         let as_collection = link.is_collection();
+        let task = sources::resolve_task(cx, link, as_collection, paths, ytdlp, creds);
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { sources::resolve(&link, as_collection, &paths, &ytdlp, &creds) })
-                .await;
+            let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.adding = false;
                 match result {
@@ -424,12 +449,55 @@ impl LocalPlaylist {
                             window.push_notification(Notification::success(msg), cx);
                         }
                     }
-                    Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                    Err(e) => this.report_error(e, window, cx),
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Show an error, or the server login screen if the server wants a password.
+    fn report_error(&mut self, e: anyhow::Error, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        if e.to_string() == crate::web::api::UNAUTHORIZED {
+            self.server_locked = true;
+            cx.notify();
+            return;
+        }
+        window.push_notification(Notification::error(format!("{e:#}")), cx);
+    }
+
+    /// Web: log in to the server with its access password.
+    fn server_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.server_login_busy {
+            return;
+        }
+        let password = self.server_password.read(cx).value().to_string();
+        if password.is_empty() {
+            return;
+        }
+        self.server_login_busy = true;
+        self.server_error = None;
+        cx.notify();
+        #[cfg(target_family = "wasm")]
+        cx.spawn_in(window, async move |this, cx| {
+            let result = crate::web::api::login(password).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.server_login_busy = false;
+                match result {
+                    Ok(()) => {
+                        this.server_locked = false;
+                        this.server_password.update(cx, |i, cx| i.set_value("", window, cx));
+                    }
+                    Err(e) => this.server_error = Some(format!("{e:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        #[cfg(not(target_family = "wasm"))]
+        let _ = (password, window);
     }
 
     fn import_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -465,10 +533,9 @@ impl LocalPlaylist {
         self.importing = true;
         cx.notify();
         let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
+        let task = sources::resolve_task(cx, link, true, paths, ytdlp, creds);
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { sources::resolve(&link, true, &paths, &ytdlp, &creds) })
-                .await;
+            let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.importing = false;
                 match result {
@@ -486,11 +553,11 @@ impl LocalPlaylist {
                         this.select(Some(id), window, cx);
                         window.push_notification(Notification::success(format!("Imported {n} tracks")), cx);
                     }
-                    Ok(Resolved::Track(_)) => window.push_notification(
+                    Ok(Resolved::Track { .. }) => window.push_notification(
                         Notification::warning("That link points to a single track, not a playlist."),
                         cx,
                     ),
-                    Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                    Err(e) => this.report_error(e, window, cx),
                 }
                 cx.notify();
             });
@@ -584,15 +651,20 @@ impl LocalPlaylist {
             self.reshuffle(track_id);
         }
         self.on_disk.clear(); // the lookup may have restored or copied a file
+        #[cfg(not(target_family = "wasm"))]
         let input = match self.local_file(&playlist, &track) {
             Some(path) => AudioInput::File(path),
             None => AudioInput::Stream(self.ensure_download(&playlist, &track)),
         };
+        #[cfg(target_family = "wasm")]
+        let input = AudioInput::Url(crate::web::api::audio_url(&track));
         if let Some(a) = self.audio.as_mut() {
             a.load(input);
         }
         self.state = PlayState::Playing;
-        self.prefetch_next();
+        if !crate::WEB {
+            self.prefetch_next();
+        }
         cx.notify();
     }
 
@@ -698,7 +770,7 @@ impl LocalPlaylist {
     /// Rename a playlist's folder to follow its name (debounced, skipped while downloading into it).
     fn apply_folder_rename(&mut self) {
         let Some((id, at)) = self.pending_folder_rename.clone() else { return };
-        if at.elapsed() < Duration::from_millis(1200) {
+        if crate::now_ms() - at < 1200.0 {
             return;
         }
         let Some(p) = self.library.playlist(&id).cloned() else {
@@ -939,11 +1011,7 @@ impl LocalPlaylist {
 
 /// Small xorshift shuffle; no need for cryptographic randomness.
 fn shuffle<T>(v: &mut [T]) {
-    let mut seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x9E3779B97F4A7C15)
-        | 1;
+    let mut seed = (crate::now_ms() * 1000.0) as u64 ^ 0x9E37_79B9_7F4A_7C15 | 1;
     for i in (1..v.len()).rev() {
         seed ^= seed << 13;
         seed ^= seed >> 7;
@@ -1117,7 +1185,7 @@ impl LocalPlaylist {
                 let Some(dir) = this.selected_playlist().map(|p| storage::playlist_dir(&this.music_root(), p)) else {
                     return Vec::new();
                 };
-                let on_disk = this.disk_keys(&dir).clone();
+                let on_disk = if crate::WEB { Default::default() } else { this.disk_keys(&dir).clone() };
                 let Some(p) = this.selected_playlist() else { return Vec::new() };
                 let now_id = this.now.as_ref().map(|n| n.track.id.clone());
                 let loading = this.is_buffering();
@@ -1290,7 +1358,7 @@ impl LocalPlaylist {
                                         }
                                     })),
                             )
-                            .child(self.render_download_all(&playlist_id_for_dl, count, cx))
+                            .when(!crate::WEB, |d| d.child(self.render_download_all(&playlist_id_for_dl, count, cx)))
                             .child(
                                 Button::new("delete-playlist")
                                     .small()
@@ -1578,6 +1646,9 @@ fn platform_badge(platform: Platform, theme: &gpui_kit::component::Theme) -> imp
 
 impl Render for LocalPlaylist {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if crate::WEB && self.server_locked {
+            return self.render_server_login(cx).into_any_element();
+        }
         let theme = cx.theme();
         v_flex()
             .size_full()
@@ -1601,5 +1672,50 @@ impl Render for LocalPlaylist {
                     ),
             )
             .child(self.render_player(window, cx))
+            .into_any_element()
+    }
+}
+
+impl LocalPlaylist {
+    /// Web: the server's access password prompt.
+    fn render_server_login(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .child(
+                v_flex()
+                    .w(px(380.))
+                    .gap_4()
+                    .p_6()
+                    .rounded_lg()
+                    .bg(theme.sidebar)
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(Icon::new(IconName::Disc3).text_color(theme.primary))
+                            .child(div().text_xl().font_semibold().child("Local Playlist")),
+                    )
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(
+                        "Enter this server's access password. Your playlists stay in this browser; the server only fetches public audio.",
+                    ))
+                    .child(Input::new(&self.server_password).mask_toggle())
+                    .when_some(self.server_error.clone(), |d, e| {
+                        d.child(div().text_sm().text_color(theme.danger).child(e))
+                    })
+                    .child(
+                        Button::new("server-login")
+                            .primary()
+                            .icon(IconName::LogIn)
+                            .label("Unlock")
+                            .loading(self.server_login_busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.server_login(window, cx))),
+                    ),
+            )
     }
 }

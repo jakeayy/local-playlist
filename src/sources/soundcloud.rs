@@ -44,7 +44,7 @@ fn resolve_with(link: &Link, paths: &Paths, auth: Option<&str>) -> Result<Resolv
             if v["kind"].as_str() != Some("track") {
                 bail!("That SoundCloud link is not a track");
             }
-            Ok(Resolved::Track(track_from_json(&v).context("Track has no usable metadata")?))
+            Ok(Resolved::Track { track: track_from_json(&v).context("Track has no usable metadata")? })
         }
         Link::SoundCloudSet { url } => {
             let v = api_resolve(url, paths, auth)?;

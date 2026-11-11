@@ -18,7 +18,13 @@ use crate::ytdlp::AUDIO_EXTS;
 
 pub const DOWNLOADING_DIR: &str = ".downloading";
 
+#[cfg(target_family = "wasm")]
+pub fn default_music_root() -> PathBuf {
+    PathBuf::from("/music")
+}
+
 /// Default music root: `<XDG music dir or ~/Music>/local-playlist`.
+#[cfg(not(target_family = "wasm"))]
 pub fn default_music_root() -> PathBuf {
     let dirs = directories::UserDirs::new();
     let base = dirs

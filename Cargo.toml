@@ -3,21 +3,40 @@ name = "local-playlist"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "local-playlist"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
+gpui-kit = { version = "0.9.1", features = ["gpui-fast"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+url = "2.5.8"
+
+# Desktop app and server.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 chacha20poly1305 = "0.11.0"
 directories = "6.0.0"
 getrandom = "0.4.3"
-gpui-kit = { version = "0.9.1", features = ["gpui-fast"] }
 keyring = "4.2.0"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-mp3", "symphonia-vorbis", "symphonia-flac", "symphonia-wav"] }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+rpassword = "7.5.5"
 sha1_smol = "1.0.1"
 sha2 = "0.11.1"
 tao = "0.37"
+tiny_http = "0.12.0"
 ureq = { version = "3.5.1", features = ["json"] }
-url = "2.5.8"
 uuid = { version = "1.29.2", features = ["v4"] }
 wry = "0.57"
 zip = "9.5.1"
+
+# Browser build (see scripts/build-web.sh).
+[target.'cfg(target_family = "wasm")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Element", "Headers", "HtmlAudioElement", "HtmlMediaElement", "Location", "MediaError", "Request", "RequestInit", "RequestMode", "Response", "Storage", "Window"] }

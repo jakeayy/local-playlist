@@ -30,6 +30,9 @@ impl LocalPlaylist {
     }
 
     pub(super) fn components_label(&self) -> SharedString {
+        #[cfg(target_family = "wasm")]
+        return format!("Server: {}", crate::web::server_host()).into();
+        #[allow(unreachable_code)]
         if let Some(st) = &self.installing {
             return st.lock().unwrap().0.clone().into();
         }
@@ -595,7 +598,32 @@ impl LocalPlaylist {
                                 }),
                             )),
                     )
-                    .child(
+                    .when(crate::WEB, |d| {
+                        d.child(
+                            v_flex()
+                                .gap_3()
+                                .child(section(
+                                    "Server",
+                                    "This web version uses the server it was opened from to look up links and stream audio. It never receives platform logins; for private playlists and offline files, use the desktop app.".into(),
+                                ))
+                                .child(h_flex().child(
+                                    Button::new("server-logout")
+                                        .small()
+                                        .icon(IconName::LogOut)
+                                        .label("Lock (forget server password)")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            #[cfg(target_family = "wasm")]
+                                            crate::web::api::logout();
+                                            this.server_locked = true;
+                                            if let Some(a) = this.audio.as_mut() {
+                                                a.stop();
+                                            }
+                                            cx.notify();
+                                        })),
+                                )),
+                        )
+                    })
+                    .when(!crate::WEB, |d| d.child(
                         v_flex()
                             .gap_3()
                             .child(section(
@@ -604,8 +632,8 @@ impl LocalPlaylist {
                             ))
                             .children(accounts)
                             .child(div().text_xs().text_color(theme.muted_foreground).child(storage_note)),
-                    )
-                    .child(
+                    ))
+                    .when(!crate::WEB, |d| d.child(
                         v_flex()
                             .gap_3()
                             .child(section(
@@ -630,8 +658,8 @@ impl LocalPlaylist {
                                         d.child(div().text_sm().text_color(theme.muted_foreground).child(s))
                                     }),
                             ),
-                    )
-                    .child(self.render_storage(cx)),
+                    ))
+                    .when(!crate::WEB, |d| d.child(self.render_storage(cx))),
             )
     }
 

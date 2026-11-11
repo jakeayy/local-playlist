@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
+#[cfg(not(target_family = "wasm"))]
+use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -154,6 +156,35 @@ pub struct Library {
     pub settings: Settings,
 }
 
+#[cfg(target_family = "wasm")]
+const WEB_LIBRARY_KEY: &str = "local-playlist.library";
+
+/// In the browser the library lives in localStorage.
+#[cfg(target_family = "wasm")]
+impl Library {
+    pub fn load(_: &Path) -> Result<Self> {
+        match crate::web::storage_get(WEB_LIBRARY_KEY) {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Self::default()),
+        }
+    }
+
+    pub fn save(&self, _: &Path) -> Result<()> {
+        crate::web::storage_set(WEB_LIBRARY_KEY, &serde_json::to_string(self)?)
+    }
+}
+
+impl Library {
+    pub fn playlist(&self, id: &str) -> Option<&Playlist> {
+        self.playlists.iter().find(|p| p.id == id)
+    }
+
+    pub fn playlist_mut(&mut self, id: &str) -> Option<&mut Playlist> {
+        self.playlists.iter_mut().find(|p| p.id == id)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
 impl Library {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
@@ -174,18 +205,16 @@ impl Library {
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
-
-    pub fn playlist(&self, id: &str) -> Option<&Playlist> {
-        self.playlists.iter().find(|p| p.id == id)
-    }
-
-    pub fn playlist_mut(&mut self, id: &str) -> Option<&mut Playlist> {
-        self.playlists.iter_mut().find(|p| p.id == id)
-    }
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+#[cfg(target_family = "wasm")]
+pub fn new_id() -> String {
+    (0..4).map(|_| format!("{:08x}", (js_sys::Math::random() * u32::MAX as f64) as u32)).collect()
 }
 
 /// Application directories (XDG on Linux).
@@ -196,6 +225,12 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// Placeholder paths for the browser build (nothing touches the disk there).
+    pub fn web() -> Self {
+        Self { data: PathBuf::from("/"), cache: PathBuf::from("/") }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     pub fn new() -> Result<Self> {
         let dirs = directories::ProjectDirs::from("", "", "local-playlist")
             .context("could not determine home directory")?;

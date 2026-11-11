@@ -4,17 +4,27 @@
 //! their websites use for logged-out visitors, so no account or login is needed.
 //! When the native path fails (e.g. the site changed), we fall back to yt-dlp.
 
+#[cfg(not(target_family = "wasm"))]
 pub mod soundcloud;
+#[cfg(not(target_family = "wasm"))]
+pub mod youtube;
+#[cfg(target_family = "wasm")]
+#[path = "../web/youtube.rs"]
 pub mod youtube;
 
+#[cfg(not(target_family = "wasm"))]
 use std::sync::OnceLock;
+#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::model::{Paths, Platform, Track};
-use crate::secrets::{Credentials, find};
+use crate::secrets::Credentials;
+#[cfg(not(target_family = "wasm"))]
+use crate::secrets::find;
 use crate::ytdlp::YtDlp;
 
 /// A parsed, supported link.
@@ -52,16 +62,18 @@ impl Link {
     }
 }
 
-/// What a link resolved to.
+/// What a link resolved to (also the `/api/resolve` response).
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Resolved {
-    Track(Track),
+    Track { track: Track },
     Collection { title: String, tracks: Vec<Track> },
 }
 
 impl Resolved {
     pub fn into_tracks(self) -> Vec<Track> {
         match self {
-            Resolved::Track(t) => vec![t],
+            Resolved::Track { track } => vec![track],
             Resolved::Collection { tracks, .. } => tracks,
         }
     }
@@ -146,6 +158,7 @@ pub fn parse_link(input: &str) -> Result<Link> {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 /// Shared HTTP agent. A generic browser-like user agent is used; no cookies are kept.
 pub fn http() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
@@ -161,6 +174,42 @@ pub fn http() -> &'static ureq::Agent {
     })
 }
 
+/// Resolve on the desktop (blocking work on a background thread) or, in the
+/// browser, by asking the server.
+pub fn resolve_task(
+    cx: &gpui_kit::App,
+    link: Link,
+    as_collection: bool,
+    paths: Paths,
+    ytdlp: YtDlp,
+    creds: Credentials,
+) -> gpui_kit::Task<Result<Resolved>> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use gpui_kit::AppContext as _;
+        cx.background_spawn(async move { resolve(&link, as_collection, &paths, &ytdlp, &creds) })
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (paths, ytdlp, creds);
+        cx.foreground_executor().spawn(async move { crate::web::api::resolve(&link, as_collection).await })
+    }
+}
+
+/// The canonical page URL for a link (sent to the server by the web UI).
+pub fn link_url(link: &Link) -> String {
+    match link {
+        Link::YouTubeVideo { id, list: Some(list) } => format!("https://www.youtube.com/watch?v={id}&list={list}"),
+        Link::YouTubeVideo { id, list: None } => format!("https://www.youtube.com/watch?v={id}"),
+        Link::YouTubePlaylist { list } => format!("https://www.youtube.com/playlist?list={list}"),
+        Link::SoundCloudTrack { url } | Link::SoundCloudSet { url } | Link::SoundCloudShort { url } => url.clone(),
+        Link::SoundCloudLikes { user_url } => format!("{user_url}/likes"),
+        Link::SoundCloudUser { user_url } => user_url.clone(),
+        Link::SoundCloudMyLikes => String::new(),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
 /// Resolve a link to track(s). `as_collection` decides whether a YouTube watch
 /// link that carries a `list=` parameter is treated as the whole playlist.
 /// Blocking: run on a background thread.
@@ -177,7 +226,7 @@ pub fn resolve(
         Link::YouTubeVideo { list: Some(list), .. } if as_collection => {
             youtube::playlist(list, yt_auth).map(collection)
         }
-        Link::YouTubeVideo { id, .. } => youtube::video(id).map(Resolved::Track),
+        Link::YouTubeVideo { id, .. } => youtube::video(id).map(|track| Resolved::Track { track }),
         Link::YouTubePlaylist { list } => youtube::playlist(list, yt_auth).map(collection),
         Link::SoundCloudShort { url } => {
             let expanded = soundcloud::expand_short_link(url)?;
@@ -211,10 +260,12 @@ pub fn resolve(
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn collection((title, tracks): (String, Vec<Track>)) -> Resolved {
     Resolved::Collection { title, tracks }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn ytdlp_fallback(
     link: &Link,
     as_collection: bool,
@@ -241,11 +292,12 @@ fn ytdlp_fallback(
         Ok(Resolved::Collection { title, tracks })
     } else {
         track_from_ytdlp(&info, platform)
-            .map(Resolved::Track)
+            .map(|track| Resolved::Track { track })
             .ok_or_else(|| anyhow::anyhow!("yt-dlp returned no usable metadata"))
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn track_from_ytdlp(v: &serde_json::Value, platform: Platform) -> Option<Track> {
     let id = match &v["id"] {
         serde_json::Value::String(s) => s.clone(),
