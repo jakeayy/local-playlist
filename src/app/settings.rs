@@ -3,6 +3,7 @@
 use super::*;
 use crate::login;
 use crate::secrets::parse_cookies;
+use crate::theme::Appearance;
 use crate::ytdlp::Source;
 use gpui_kit::component::input::Textarea;
 
@@ -557,6 +558,32 @@ impl LocalPlaylist {
                                         cx.notify();
                                     })),
                             ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_3()
+                            .child(section("Appearance", "Material-style light and dark themes.".into()))
+                            .child(h_flex().gap_1().children(
+                                [
+                                    (Appearance::System, "System", IconName::Monitor),
+                                    (Appearance::Light, "Light", IconName::Sun),
+                                    (Appearance::Dark, "Dark", IconName::Moon),
+                                ]
+                                .map(|(choice, label, icon)| {
+                                    Button::new(label)
+                                        .small()
+                                        .icon(icon)
+                                        .label(label)
+                                        .when(self.library.settings.appearance == choice, |b| b.primary())
+                                        .when(self.library.settings.appearance != choice, |b| b.ghost())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.library.settings.appearance = choice;
+                                            this.save();
+                                            crate::theme::apply(choice, Some(window), cx);
+                                            cx.notify();
+                                        }))
+                                }),
+                            )),
                     )
                     .child(
                         v_flex()

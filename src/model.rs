@@ -109,6 +109,8 @@ pub struct Settings {
     pub music_dir: Option<PathBuf>,
     /// Size limit of the removed-tracks cache, in MB.
     pub removed_cache_mb: u64,
+    /// System / light / dark.
+    pub appearance: crate::theme::Appearance,
 }
 
 impl Default for Settings {
@@ -121,6 +123,7 @@ impl Default for Settings {
             js_source: Default::default(),
             music_dir: None,
             removed_cache_mb: 2048,
+            appearance: Default::default(),
         }
     }
 }

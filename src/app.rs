@@ -218,6 +218,13 @@ impl LocalPlaylist {
             }),
         ];
 
+        let mut subscriptions = subscriptions;
+        subscriptions.push(cx.observe_window_appearance(window, |this, window, cx| {
+            if this.library.settings.appearance == crate::theme::Appearance::System {
+                crate::theme::apply(crate::theme::Appearance::System, Some(window), cx);
+            }
+        }));
+
         let ticker = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(200)).await;
@@ -959,7 +966,7 @@ impl LocalPlaylist {
                 .px_2()
                 .py_1p5()
                 .gap_2()
-                .rounded_md()
+                .rounded_full()
                 .cursor_pointer()
                 .when(selected, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
                 .hover(|d| d.bg(theme.sidebar_accent))
@@ -1128,9 +1135,9 @@ impl LocalPlaylist {
                             .h(px(48.))
                             .px_3()
                             .gap_3()
-                            .rounded_md()
+                            .rounded_lg()
                             .cursor_pointer()
-                            .when(current, |d| d.bg(theme.list_active))
+                            .when(current, |d| d.bg(theme.primary.alpha(0.12)))
                             .hover(|d| d.bg(theme.list_hover))
                             .child(
                                 div().w(px(28.)).flex_none().text_sm().text_color(theme.muted_foreground).child(
@@ -1446,7 +1453,7 @@ impl LocalPlaylist {
             .gap_4()
             .border_t_1()
             .border_color(theme.border)
-            .bg(theme.secondary)
+            .bg(theme.sidebar)
             .child(div().w(px(260.)).flex_none().child(info))
             .child(
                 v_flex()
@@ -1547,21 +1554,26 @@ impl LocalPlaylist {
 }
 
 fn platform_badge(platform: Platform, theme: &gpui_kit::component::Theme) -> impl IntoElement {
-    let color = match platform {
-        Platform::YouTube => hsla(0. / 360., 0.75, 0.5, 1.),
-        Platform::SoundCloud => hsla(22. / 360., 0.95, 0.52, 1.),
+    // Tonal chip in the platform's hue, tuned for light/dark surfaces.
+    let hue = match platform {
+        Platform::YouTube => 0. / 360.,
+        Platform::SoundCloud => 22. / 360.,
+    };
+    let (fg, bg) = if theme.is_dark() {
+        (hsla(hue, 0.9, 0.78, 1.), hsla(hue, 0.6, 0.5, 0.18))
+    } else {
+        (hsla(hue, 0.75, 0.38, 1.), hsla(hue, 0.9, 0.55, 0.12))
     };
     div()
         .flex_none()
-        .px_1p5()
-        .rounded_sm()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
         .text_xs()
-        .border_1()
-        .border_color(color.alpha(0.5))
-        .text_color(color)
-        .bg(color.alpha(0.08))
+        .font_medium()
+        .text_color(fg)
+        .bg(bg)
         .child(platform.label())
-        .when(theme.is_dark(), |d| d.bg(color.alpha(0.15)))
 }
 
 impl Render for LocalPlaylist {
