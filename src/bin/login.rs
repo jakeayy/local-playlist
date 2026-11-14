@@ -10,6 +10,10 @@
 //!
 //! Exit codes: 0 logged in (cookies on stdout), 2 window closed, 1 error.
 
+// A GUI program on Windows: no console window next to the login window. Its
+// output goes through the pipes the app reads it from.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};

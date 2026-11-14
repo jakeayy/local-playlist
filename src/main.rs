@@ -1,6 +1,12 @@
 //! Local Playlist entry point: desktop app, diagnostics or server. (The
 //! webview login is a separate executable, see `src/bin/login.rs`.)
 
+// On Windows the desktop app is a GUI program, so no console window opens
+// behind it. Started from a terminal, it attaches to that terminal instead
+// (see `attach_terminal`), so its output and logs still show there. Debug
+// builds and server-only builds stay console programs.
+#![cfg_attr(all(windows, feature = "desktop", not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(feature = "desktop")]
 use local_playlist::{secrets, sources, ytdlp};
 #[cfg(feature = "desktop")]
@@ -10,6 +16,8 @@ use local_playlist::server;
 
 fn main() {
     local_playlist::mem::tune();
+    #[cfg(all(windows, feature = "desktop", not(debug_assertions)))]
+    attach_terminal();
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str);
 
@@ -93,5 +101,32 @@ fn diagnose(args: &[String], paths: &model::Paths) {
     match result {
         Ok(s) => print!("{s}"),
         Err(e) => eprintln!("{e:#}"),
+    }
+}
+
+/// Windows GUI build: when started from a terminal, send output (`--version`,
+/// `--diagnose`, logs) to it. Started from Explorer there's no terminal and
+/// nothing happens. Output already redirected (to a file or pipe) is kept.
+#[cfg(all(windows, feature = "desktop", not(debug_assertions)))]
+fn attach_terminal() {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // SAFETY: plain Win32 calls without preconditions; attaching fails
+    // harmlessly when the parent has no console.
+    unsafe {
+        let redirected = |which| {
+            let h = GetStdHandle(which);
+            !h.is_null() && h as isize != -1
+        };
+        if !redirected(STD_OUTPUT_HANDLE) && !redirected(STD_ERROR_HANDLE) {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
     }
 }
