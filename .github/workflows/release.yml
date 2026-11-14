@@ -2,7 +2,8 @@
 # and Windows) and publishes it as the release v<version>, the version being
 # Cargo.toml's. Runs when a push to main bumps that version, or by hand
 # (Actions → Release → Run workflow). The development pre-release (see
-# dev.yml) is removed, since the release supersedes it.
+# dev.yml) is removed, since the release supersedes it. The Docker image
+# ghcr.io/<owner>/<repo> is tagged <version>, latest and dev.
 
 name: Release
 
@@ -18,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -28,7 +29,7 @@ jobs:
       release: ${{ steps.check.outputs.release }}
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: check
@@ -68,12 +69,15 @@ jobs:
 
   publish:
     name: Publish release
+    # Creates and deletes releases.
+    permissions:
+      contents: write
     needs: [check, build]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: package-*
           path: dist
@@ -98,3 +102,26 @@ jobs:
               echo "Removing $old"
               gh release delete "$old" --cleanup-tag --yes
             done
+
+  # A job of its own so a failed push can be re-run without publishing again.
+  docker:
+    name: Publish Docker image
+    needs: [check, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-linux-x64-server
+          path: dist
+
+      # `dev` too: like the pre-release, the dev image is superseded by the release.
+      - name: Push ghcr.io image (version, latest, dev)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: .github/docker-publish.sh "$VERSION" "$VERSION" latest dev

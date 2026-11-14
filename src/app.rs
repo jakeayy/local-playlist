@@ -195,9 +195,7 @@ impl LocalPlaylist {
         let (creds, key_storage) = match SecretStore::new(&paths).load() {
             Ok(r) => r,
             Err(e) => {
-                pending_notes.push(Notification::error(format!(
-                    "{e:#}. Log in again from Settings → Accounts."
-                )));
+                pending_notes.push(Notification::error(format!("{e:#}. Log in again from Settings → Accounts.")));
                 (Credentials::default(), None)
             }
         };
@@ -214,23 +212,18 @@ impl LocalPlaylist {
             cx.new(|_| visualizer::Visualizer::new(tap))
         };
 
-        let url_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Paste a YouTube / SoundCloud track or playlist link…")
-        });
-        let import_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL"));
+        let url_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Paste a YouTube / SoundCloud track or playlist link…"));
+        let import_input = cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL"));
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name"));
-        let search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search title or artist"));
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search title or artist"));
         let server_password = cx.new(|cx| InputState::new(window, cx).placeholder("Server password").masked(true));
         let cookie_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Paste a Netscape cookies.txt export, or a Cookie header (name=value; name2=value2)")
         });
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001).default_value(0.));
-        let volume = cx.new(|_| {
-            SliderState::new().min(0.).max(1.).step(0.01).default_value(library.settings.volume)
-        });
+        let volume = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.01).default_value(library.settings.volume));
 
         let subscriptions = vec![
             cx.subscribe_in(&url_input, window, |this, _, ev: &InputEvent, window, cx| {
@@ -500,11 +493,8 @@ impl LocalPlaylist {
         self.stop_batch(&id, cx);
         self.on_disk.clear();
         self.save();
-        let next = self
-            .library
-            .playlists
-            .get(idx.min(self.library.playlists.len().saturating_sub(1)))
-            .map(|p| p.id.clone());
+        let next =
+            self.library.playlists.get(idx.min(self.library.playlists.len().saturating_sub(1))).map(|p| p.id.clone());
         self.select(next, window, cx);
     }
 
@@ -715,10 +705,8 @@ impl LocalPlaylist {
         storage::enforce_limit(&dir, 0);
         self.removed_size = None;
         let _ = std::fs::remove_dir_all(self.paths.cache.join("audio")); // pre-0.2 flat cache
-        window.push_notification(
-            Notification::info(format!("Freed {:.1} MB of removed tracks", size as f64 / 1e6)),
-            cx,
-        );
+        window
+            .push_notification(Notification::info(format!("Freed {:.1} MB of removed tracks", size as f64 / 1e6)), cx);
         cx.notify();
     }
 
@@ -929,10 +917,7 @@ impl LocalPlaylist {
             return;
         }
         let id = track.source_id.clone();
-        let fresh = self
-            .segments
-            .get(&id)
-            .is_some_and(|(at, _)| crate::now_ms() - at < MAX_AGE_MS);
+        let fresh = self.segments.get(&id).is_some_and(|(at, _)| crate::now_ms() - at < MAX_AGE_MS);
         if fresh || !self.segments_loading.insert(id.clone()) {
             return;
         }
@@ -940,8 +925,7 @@ impl LocalPlaylist {
             #[cfg(not(target_family = "wasm"))]
             let res = {
                 let id = id.clone();
-                cx.background_spawn(async move { crate::sponsorblock::fetch(&id) })
-                    .await
+                cx.background_spawn(async move { crate::sponsorblock::fetch(&id) }).await
             };
             #[cfg(target_family = "wasm")]
             let res = crate::web::api::segments(&id).await;
@@ -966,15 +950,7 @@ impl LocalPlaylist {
             let map = self
                 .segments
                 .iter()
-                .map(|(id, (at, segs))| {
-                    (
-                        id.clone(),
-                        cache::Entry {
-                            fetched_ms: *at,
-                            segments: segs.clone(),
-                        },
-                    )
-                })
+                .map(|(id, (at, segs))| (id.clone(), cache::Entry { fetched_ms: *at, segments: segs.clone() }))
                 .collect();
             cache::save(&cache::file(&self.paths), &map);
         }
@@ -996,16 +972,11 @@ impl LocalPlaylist {
             return;
         };
         let pos = audio.position().as_secs_f64();
-        let Some(target) =
-            crate::sponsorblock::skip_target(segs, &settings.sponsorblock_categories, pos)
-        else {
+        let Some(target) = crate::sponsorblock::skip_target(segs, &settings.sponsorblock_categories, pos) else {
             return;
         };
         let t = crate::now_ms();
-        if self
-            .last_skip
-            .is_some_and(|(prev, at)| (prev - target).abs() < 0.01 && t - at < 2000.0)
-        {
+        if self.last_skip.is_some_and(|(prev, at)| (prev - target).abs() < 0.01 && t - at < 2000.0) {
             return;
         }
         self.last_skip = Some((target, t));
@@ -1211,15 +1182,19 @@ impl LocalPlaylist {
     fn toggle_play(&mut self, cx: &mut Context<Self>) {
         match (&self.state, &self.audio) {
             (PlayState::Playing, Some(a)) if a.is_loaded() => {
-                if a.is_paused() { a.play() } else { a.pause() }
+                if a.is_paused() {
+                    a.play()
+                } else {
+                    a.pause()
+                }
             }
             _ => {
                 // Start the selected playlist from the top (or resume last track).
                 let target = match &self.now {
                     Some(n) => Some((n.playlist_id.clone(), n.track.id.clone())),
-                    None => self
-                        .selected_playlist()
-                        .and_then(|p| p.tracks.first().map(|t| (p.id.clone(), t.id.clone()))),
+                    None => {
+                        self.selected_playlist().and_then(|p| p.tracks.first().map(|t| (p.id.clone(), t.id.clone())))
+                    }
                 };
                 if let Some((pid, tid)) = target {
                     self.play(&pid, &tid, cx);
@@ -1690,17 +1665,18 @@ impl LocalPlaylist {
                             .cursor_pointer()
                             .when(current, |d| d.bg(theme.primary.alpha(0.12)))
                             .hover(|d| d.bg(theme.list_hover))
-                            .child(
-                                div().w(px(28.)).flex_none().text_sm().text_color(theme.muted_foreground).child(
-                                    if current && loading {
-                                        Icon::new(IconName::LoaderCircle).small().text_color(theme.primary).into_any_element()
-                                    } else if current && !paused {
-                                        Icon::new(IconName::Volume2).small().text_color(theme.primary).into_any_element()
-                                    } else {
-                                        (ix + 1).to_string().into_any_element()
-                                    },
-                                ),
-                            )
+                            .child(div().w(px(28.)).flex_none().text_sm().text_color(theme.muted_foreground).child(
+                                if current && loading {
+                                    Icon::new(IconName::LoaderCircle)
+                                        .small()
+                                        .text_color(theme.primary)
+                                        .into_any_element()
+                                } else if current && !paused {
+                                    Icon::new(IconName::Volume2).small().text_color(theme.primary).into_any_element()
+                                } else {
+                                    (ix + 1).to_string().into_any_element()
+                                },
+                            ))
                             .child(thumbs::cover_tile(thumb, px(36.), &theme))
                             .child(
                                 v_flex()
@@ -1713,44 +1689,42 @@ impl LocalPlaylist {
                                             .child(t.title.clone()),
                                     )
                                     .child(
-                                        div()
-                                            .text_xs()
-                                            .truncate()
-                                            .text_color(theme.muted_foreground)
-                                            .child(if t.artist.is_empty() { "—".to_string() } else { t.artist.clone() }),
+                                        div().text_xs().truncate().text_color(theme.muted_foreground).child(
+                                            if t.artist.is_empty() { "—".to_string() } else { t.artist.clone() },
+                                        ),
                                     ),
                             )
                             .child(
                                 // Download status: progress, error, or on disk.
-                                div().w(px(36.)).flex_none().flex().justify_end().child(
-                                    if let Some(p) = progress {
-                                        div()
-                                            .text_xs()
-                                            .text_color(theme.muted_foreground)
-                                            .child(format!("{:.0}%", p * 100.))
-                                            .into_any_element()
-                                    } else if let Some(err) = this.download_errors.get(&target).cloned() {
-                                        div()
-                                            .id(("dl-err", ix))
-                                            .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
-                                            .tooltip(move |window, cx| {
-                                                gpui_kit::component::tooltip::Tooltip::new(format!("Download failed: {err}"))
-                                                    .build(window, cx)
-                                            })
-                                            .into_any_element()
-                                    } else if downloaded {
-                                        div()
-                                            .id(("dl-ok", ix))
-                                            .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
-                                            .tooltip(|window, cx| {
-                                                gpui_kit::component::tooltip::Tooltip::new("Downloaded — plays offline")
-                                                    .build(window, cx)
-                                            })
-                                            .into_any_element()
-                                    } else {
-                                        div().into_any_element()
-                                    },
-                                ),
+                                div().w(px(36.)).flex_none().flex().justify_end().child(if let Some(p) = progress {
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(format!("{:.0}%", p * 100.))
+                                        .into_any_element()
+                                } else if let Some(err) = this.download_errors.get(&target).cloned() {
+                                    div()
+                                        .id(("dl-err", ix))
+                                        .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(format!(
+                                                "Download failed: {err}"
+                                            ))
+                                            .build(window, cx)
+                                        })
+                                        .into_any_element()
+                                } else if downloaded {
+                                    div()
+                                        .id(("dl-ok", ix))
+                                        .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
+                                        .tooltip(|window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new("Downloaded — plays offline")
+                                                .build(window, cx)
+                                        })
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }),
                             )
                             .child(platform_badge(t.platform, &theme))
                             .child(
@@ -1767,14 +1741,12 @@ impl LocalPlaylist {
                                     .gap_0p5()
                                     .when(!filtering, |d| {
                                         d.child(
-                                            Button::new(("up", ix))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(IconName::ArrowUp)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                            Button::new(("up", ix)).ghost().xsmall().icon(IconName::ArrowUp).on_click(
+                                                cx.listener(move |this, _, _, cx| {
                                                     cx.stop_propagation();
                                                     this.move_track(&tid_up, -1, cx);
-                                                })),
+                                                }),
+                                            ),
                                         )
                                     })
                                     .when(!filtering, |d| {
@@ -1869,7 +1841,11 @@ impl LocalPlaylist {
                                     .child(format!(
                                         "{count} track{}{}",
                                         if count == 1 { "" } else { "s" },
-                                        if total > 0 { format!(" · {}", format_duration(total)) } else { String::new() }
+                                        if total > 0 {
+                                            format!(" · {}", format_duration(total))
+                                        } else {
+                                            String::new()
+                                        }
                                     )),
                             )
                             .when(count > 0, |d| {
@@ -1877,7 +1853,9 @@ impl LocalPlaylist {
                                     div().w(px(260.)).flex_shrink(1.).child(
                                         Input::new(&self.search_input)
                                             .small()
-                                            .prefix(Icon::new(IconName::Search).small().text_color(theme.muted_foreground))
+                                            .prefix(
+                                                Icon::new(IconName::Search).small().text_color(theme.muted_foreground),
+                                            )
                                             .cleanable(true),
                                     ),
                                 )
@@ -1950,75 +1928,42 @@ impl LocalPlaylist {
         let theme = cx.theme().clone();
         let style = self.visualizer.read(cx).style;
         let style_button = |id: &'static str, icon: IconName, tip: &'static str, s: Style| {
-            Button::new(id)
-                .ghost()
-                .small()
-                .icon(icon)
-                .toggled(style == s)
-                .tooltip(tip)
-                .on_click(cx.listener(move |this, _, _, cx| {
+            Button::new(id).ghost().small().icon(icon).toggled(style == s).tooltip(tip).on_click(cx.listener(
+                move |this, _, _, cx| {
                     this.visualizer.update(cx, |v, cx| {
                         v.style = s;
                         cx.notify();
                     });
-                }))
+                },
+            ))
         };
         // The visualizer fills the page, with the title over it.
-        div()
-            .size_full()
-            .relative()
-            .child(div().absolute().inset_0().child(self.visualizer.clone()))
-            .child(
-                h_flex()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .p_6()
-                    .gap_4()
-                    .child(
-                        match &self.now {
-                            Some(n) => v_flex()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .text_xl()
-                                        .font_semibold()
-                                        .truncate()
-                                        .child(n.track.title.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_color(theme.muted_foreground)
-                                        .child(n.track.artist.clone()),
-                                ),
-                            None => v_flex().child(
-                                div()
-                                    .text_color(theme.muted_foreground)
-                                    .child("Nothing playing"),
-                            ),
-                        }
-                        .flex_1(),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1()
-                            .child(style_button(
-                                "vis-circle",
-                                IconName::Disc3,
-                                "Circle",
-                                Style::Circle,
-                            ))
-                            .child(style_button(
-                                "vis-bars",
-                                IconName::ChartColumn,
-                                "Bars",
-                                Style::Bars,
-                            )),
-                    ),
-            )
+        div().size_full().relative().child(div().absolute().inset_0().child(self.visualizer.clone())).child(
+            h_flex()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .p_6()
+                .gap_4()
+                .child(
+                    match &self.now {
+                        Some(n) => v_flex()
+                            .min_w_0()
+                            .child(div().text_xl().font_semibold().truncate().child(n.track.title.clone()))
+                            .child(div().truncate().text_color(theme.muted_foreground).child(n.track.artist.clone())),
+                        None => v_flex().child(div().text_color(theme.muted_foreground).child("Nothing playing")),
+                    }
+                    .flex_1(),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .child(style_button("vis-circle", IconName::Disc3, "Circle", Style::Circle))
+                        .child(style_button("vis-bars", IconName::ChartColumn, "Bars", Style::Bars)),
+                ),
+        )
     }
 
     /// "Download all" button, or batch progress with a stop button while running.
@@ -2071,11 +2016,7 @@ impl LocalPlaylist {
             .ghost()
             .small()
             .icon(if all_on_disk { IconName::CircleCheck } else { IconName::HardDriveDownload })
-            .tooltip(if all_on_disk {
-                "All tracks are downloaded"
-            } else {
-                "Download all tracks for offline playback"
-            })
+            .tooltip(if all_on_disk { "All tracks are downloaded" } else { "Download all tracks for offline playback" })
             .disabled(count == 0)
             .on_click(cx.listener(move |this, _, window, cx| this.download_all(&pid, window, cx)))
             .into_any_element()
@@ -2086,26 +2027,22 @@ impl LocalPlaylist {
         // The bar touches the window's bottom corners, which may be rounded.
         let radii = gpui_kit::component::window_corner_radii(window, cx);
         let settings = self.library.settings.clone();
-        let playing = matches!(self.state, PlayState::Playing)
-            && self.audio.as_ref().is_some_and(|a| !a.is_paused());
+        let playing = matches!(self.state, PlayState::Playing) && self.audio.as_ref().is_some_and(|a| !a.is_paused());
         let buffering = self.is_buffering();
         let download = self.current_download();
         let loading = buffering.then(|| download.unwrap_or(0.));
 
         let info = match &self.now {
-            Some(n) => v_flex()
-                .min_w_0()
-                .child(div().truncate().font_medium().child(n.track.title.clone()))
-                .child(
-                    div().text_xs().truncate().text_color(theme.muted_foreground).child(match loading {
-                        Some(p) if p > 0. => format!("Buffering… (downloaded {:.0}%)", p * 100.),
-                        Some(_) => "Starting stream…".to_string(),
-                        None => match download {
-                            Some(p) => format!("{} · streaming, {:.0}% downloaded", n.track.artist, p * 100.),
-                            None => format!("{} · {}", n.track.artist, n.track.platform.label()),
-                        },
-                    }),
-                ),
+            Some(n) => v_flex().min_w_0().child(div().truncate().font_medium().child(n.track.title.clone())).child(
+                div().text_xs().truncate().text_color(theme.muted_foreground).child(match loading {
+                    Some(p) if p > 0. => format!("Buffering… (downloaded {:.0}%)", p * 100.),
+                    Some(_) => "Starting stream…".to_string(),
+                    None => match download {
+                        Some(p) => format!("{} · streaming, {:.0}% downloaded", n.track.artist, p * 100.),
+                        None => format!("{} · {}", n.track.artist, n.track.platform.label()),
+                    },
+                }),
+            ),
             None => v_flex().child(div().text_color(theme.muted_foreground).child("Nothing playing")),
         };
         // The full cover once loaded; the list thumbnail until then.
@@ -2268,28 +2205,20 @@ impl Render for LocalPlaylist {
             .rounded_tr(radii.top_right)
             .rounded_bl(radii.bottom_left)
             .rounded_br(radii.bottom_right)
-            .when(Self::has_title_bar(window), |d| {
-                d.child(self.render_title_bar(cx))
-            })
+            .when(Self::has_title_bar(window), |d| d.child(self.render_title_bar(cx)))
             .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.render_sidebar(window, cx))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
-                            .child(div().flex_1().min_h_0().child(match self.view {
-                                View::Playlist if self.show_visualizer => {
-                                    self.render_visualizer(cx).into_any_element()
-                                }
-                                View::Playlist => self.render_main(window, cx).into_any_element(),
-                                View::Settings => self.render_settings(window, cx).into_any_element(),
-                            })),
-                    ),
+                h_flex().flex_1().min_h_0().child(self.render_sidebar(window, cx)).child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
+                        .child(div().flex_1().min_h_0().child(match self.view {
+                            View::Playlist if self.show_visualizer => self.render_visualizer(cx).into_any_element(),
+                            View::Playlist => self.render_main(window, cx).into_any_element(),
+                            View::Settings => self.render_settings(window, cx).into_any_element(),
+                        })),
+                ),
             )
             .child(self.render_player(window, cx))
             .into_any_element()
@@ -2304,8 +2233,7 @@ impl LocalPlaylist {
         if crate::WEB {
             return false;
         }
-        !cfg!(target_os = "linux")
-            || matches!(window.window_decorations(), Decorations::Client { .. })
+        !cfg!(target_os = "linux") || matches!(window.window_decorations(), Decorations::Client { .. })
     }
 
     /// Custom title bar: app name, the playing track, and window controls.

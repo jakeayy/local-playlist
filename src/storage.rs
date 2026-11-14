@@ -42,10 +42,16 @@ pub fn music_root(settings: &Settings) -> PathBuf {
 
 /// File-system safe folder name for a playlist.
 pub fn sanitize(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c })
-        .collect();
+    let cleaned: String =
+        name.chars()
+            .map(|c| {
+                if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
     let trimmed = cleaned.trim().trim_matches('.').trim();
     let mut out: String = trimmed.chars().take(100).collect();
     if out.is_empty() {

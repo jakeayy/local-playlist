@@ -11,8 +11,8 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use super::{Link, Resolved, http};
-use ureq::ResponseExt as _;
 use crate::model::{Paths, Platform, Track};
+use ureq::ResponseExt as _;
 
 const API: &str = "https://api-v2.soundcloud.com";
 const MAX_ITEMS: usize = 10_000;
@@ -96,13 +96,10 @@ fn user_info(user: &Value) -> Result<(u64, String)> {
 /// uploader's avatar.
 pub fn artwork_url(id: &str, paths: &Paths) -> Result<Option<String>> {
     let v = api_get(&format!("{API}/tracks/{id}"), paths, None)?;
-    let url = [
-        v["artwork_url"].as_str(),
-        v.pointer("/user/avatar_url").and_then(Value::as_str),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|u| !u.is_empty() && !u.contains("default_avatar"));
+    let url = [v["artwork_url"].as_str(), v.pointer("/user/avatar_url").and_then(Value::as_str)]
+        .into_iter()
+        .flatten()
+        .find(|u| !u.is_empty() && !u.contains("default_avatar"));
     Ok(url.map(str::to_string))
 }
 
@@ -307,9 +304,7 @@ mod tests {
     #[ignore = "network"]
     fn live_set() {
         let link = super::super::parse_link("https://soundcloud.com/forss/sets/soulhack").unwrap();
-        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths(), None).unwrap() else {
-            panic!()
-        };
+        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths(), None).unwrap() else { panic!() };
         println!("{title}: {:?}", tracks.iter().map(|t| &t.title).collect::<Vec<_>>());
         assert_eq!(tracks.len(), 11);
     }
@@ -318,9 +313,7 @@ mod tests {
     #[ignore = "network"]
     fn live_likes() {
         let link = super::super::parse_link("https://soundcloud.com/forss/likes").unwrap();
-        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths(), None).unwrap() else {
-            panic!()
-        };
+        let Resolved::Collection { title, tracks } = resolve(&link, &test_paths(), None).unwrap() else { panic!() };
         println!("{title}: {} tracks", tracks.len());
         assert!(!tracks.is_empty());
     }

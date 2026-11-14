@@ -16,6 +16,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   BINARYEN_VERSION: "133"
@@ -34,7 +37,7 @@ jobs:
     env:
       PACKAGE: local-playlist-${{ inputs.label }}-${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         if: runner.os == 'Linux'
@@ -44,9 +47,11 @@ jobs:
             libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libxcb1-dev libwebkit2gtk-4.1-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build
         run: cargo build --release --locked
@@ -55,7 +60,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p "dist/$PACKAGE"
-          cp target/release/local-playlist target/release/local-playlist-login README.md "dist/$PACKAGE/"
+          cp target/release/local-playlist target/release/local-playlist-login README.md LICENSE "dist/$PACKAGE/"
           tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
 
       - name: Package
@@ -63,10 +68,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "dist/$env:PACKAGE" | Out-Null
-          Copy-Item target/release/local-playlist.exe, target/release/local-playlist-login.exe, README.md "dist/$env:PACKAGE/"
+          Copy-Item target/release/local-playlist.exe, target/release/local-playlist-login.exe, README.md, LICENSE "dist/$env:PACKAGE/"
           Compress-Archive -Path "dist/$env:PACKAGE" -DestinationPath "dist/$env:PACKAGE.zip"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-${{ matrix.platform }}
           path: |
@@ -78,14 +83,15 @@ jobs:
     name: Web UI
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Nightly: GPUI's web backend uses unstable wasm-threading features.
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: nightly
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install wasm-bindgen and wasm-opt
         run: |
@@ -101,7 +107,7 @@ jobs:
       - name: Build
         run: ./scripts/build-web.sh
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-dist
           path: web/dist
@@ -121,17 +127,19 @@ jobs:
     env:
       PACKAGE: local-playlist-${{ inputs.label }}-${{ matrix.platform }}-server
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Embedded by build.rs when present.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-dist
           path: web/dist
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build
         run: cargo build --release --locked --no-default-features --features server
@@ -140,7 +148,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p "dist/$PACKAGE"
-          cp target/release/local-playlist README.md "dist/$PACKAGE/"
+          cp target/release/local-playlist README.md LICENSE "dist/$PACKAGE/"
           tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
 
       - name: Package
@@ -148,10 +156,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "dist/$env:PACKAGE" | Out-Null
-          Copy-Item target/release/local-playlist.exe, README.md "dist/$env:PACKAGE/"
+          Copy-Item target/release/local-playlist.exe, README.md, LICENSE "dist/$env:PACKAGE/"
           Compress-Archive -Path "dist/$env:PACKAGE" -DestinationPath "dist/$env:PACKAGE.zip"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-${{ matrix.platform }}-server
           path: |

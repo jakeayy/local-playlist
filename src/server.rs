@@ -158,7 +158,8 @@ pub fn run(args: &[String]) -> Result<()> {
                 std::thread::sleep(Duration::from_secs(300));
                 cleanup(&state, max_age);
                 crate::mem::trim();
-                if last_update.elapsed() > Duration::from_secs(24 * 3600) && state.ytdlp.ytdlp_source == Source::Managed {
+                if last_update.elapsed() > Duration::from_secs(24 * 3600) && state.ytdlp.ytdlp_source == Source::Managed
+                {
                     last_update = Instant::now();
                     match state.ytdlp.install(Component::YtDlp, &|_, _| {}) {
                         Ok(Some(i)) => eprintln!("yt-dlp updated to {}", i.short()),
@@ -307,8 +308,9 @@ fn static_file(req: Request, bytes: &'static [u8], ty: &str, encoding: Option<&s
         let resp = Response::new(StatusCode(304), headers.to_vec(), std::io::empty(), Some(0), None);
         return respond(req, resp);
     }
-    let mut resp = Response::new(StatusCode(200), headers.to_vec(), std::io::Cursor::new(bytes), Some(bytes.len()), None)
-        .with_header(header("Content-Type", ty));
+    let mut resp =
+        Response::new(StatusCode(200), headers.to_vec(), std::io::Cursor::new(bytes), Some(bytes.len()), None)
+            .with_header(header("Content-Type", ty));
     if let Some(encoding) = encoding {
         resp.add_header(header("Content-Encoding", encoding));
     }
@@ -410,10 +412,7 @@ fn resolve(state: &State, query: &HashMap<String, String>) -> Response<std::io::
 
 /// SponsorBlock segments of a YouTube video (the browser can't reach the API itself).
 fn segments(query: &HashMap<String, String>) -> Response<std::io::Cursor<Vec<u8>>> {
-    let Some(id) = query
-        .get("id")
-        .filter(|id| sources::youtube::is_video_id(id))
-    else {
+    let Some(id) = query.get("id").filter(|id| sources::youtube::is_video_id(id)) else {
         return error(400, "missing or invalid id");
     };
     match crate::sponsorblock::fetch(id) {
@@ -428,17 +427,13 @@ fn cover(state: &State, query: &HashMap<String, String>) -> Response<std::io::Cu
         Some("sc") => Platform::SoundCloud,
         _ => return error(400, "missing or invalid platform"),
     };
-    let Some(id) = query
-        .get("id")
-        .filter(|id| crate::cover::valid_id(platform, id))
-    else {
+    let Some(id) = query.get("id").filter(|id| crate::cover::valid_id(platform, id)) else {
         return error(400, "missing or invalid id");
     };
     let size = query.get("size").and_then(|s| crate::cover::Size::from_param(s)).unwrap_or(crate::cover::Size::Full);
     match crate::cover::get(&state.paths, platform, id, size) {
         Ok(bytes) => {
-            let mime =
-                crate::cover::image_format(&bytes).map_or("application/octet-stream", |f| f.mime());
+            let mime = crate::cover::image_format(&bytes).map_or("application/octet-stream", |f| f.mime());
             Response::from_data(bytes)
                 .with_header(header("Content-Type", mime))
                 .with_header(header("Cache-Control", "private, max-age=86400"))
@@ -549,8 +544,9 @@ fn audio(state: &State, req: Request, query: &HashMap<String, String>) {
     let start = parse_range(&req).map(|r| r.0).unwrap_or(0);
     let _ = file.seek(SeekFrom::Start(start));
     let reader = GrowingReader { file, dl };
-    let mut resp = Response::new(StatusCode(200), vec![header("Content-Type", content_type(&partial))], reader, None, None)
-        .with_header(header("Cache-Control", "no-store"));
+    let mut resp =
+        Response::new(StatusCode(200), vec![header("Content-Type", content_type(&partial))], reader, None, None)
+            .with_header(header("Cache-Control", "no-store"));
     if start > 0 {
         resp = resp.with_status_code(206);
         resp.add_header(header("Content-Range", &format!("bytes {start}-*/*")));

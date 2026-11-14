@@ -44,9 +44,6 @@ pub fn login(platform: Platform) -> Result<Vec<StoredCookie>> {
     match out.status.code() {
         Some(0) => Ok(serde_json::from_slice(&out.stdout).context("login helper returned bad data")?),
         Some(2) => bail!("Login cancelled"),
-        _ => bail!(
-            "Login failed: {}",
-            String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("unknown error")
-        ),
+        _ => bail!("Login failed: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("unknown error")),
     }
 }

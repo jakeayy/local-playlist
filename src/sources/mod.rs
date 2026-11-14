@@ -30,14 +30,29 @@ use crate::ytdlp::YtDlp;
 /// A parsed, supported link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Link {
-    YouTubeVideo { id: String, list: Option<String> },
-    YouTubePlaylist { list: String },
-    SoundCloudTrack { url: String },
-    SoundCloudSet { url: String },
-    SoundCloudLikes { user_url: String },
-    SoundCloudUser { user_url: String },
+    YouTubeVideo {
+        id: String,
+        list: Option<String>,
+    },
+    YouTubePlaylist {
+        list: String,
+    },
+    SoundCloudTrack {
+        url: String,
+    },
+    SoundCloudSet {
+        url: String,
+    },
+    SoundCloudLikes {
+        user_url: String,
+    },
+    SoundCloudUser {
+        user_url: String,
+    },
     /// SoundCloud short link (on.soundcloud.com) which must be expanded first.
-    SoundCloudShort { url: String },
+    SoundCloudShort {
+        url: String,
+    },
     /// The logged-in user's own likes.
     SoundCloudMyLikes,
 }
@@ -80,8 +95,22 @@ impl Resolved {
 }
 
 const SC_RESERVED_ROOT: &[&str] = &[
-    "discover", "search", "stream", "upload", "you", "settings", "messages", "notifications",
-    "charts", "pages", "terms-of-use", "popular", "people", "feed", "signin", "logout",
+    "discover",
+    "search",
+    "stream",
+    "upload",
+    "you",
+    "settings",
+    "messages",
+    "notifications",
+    "charts",
+    "pages",
+    "terms-of-use",
+    "popular",
+    "people",
+    "feed",
+    "signin",
+    "logout",
 ];
 
 const SC_USER_SUBPAGES: &[&str] =
@@ -96,8 +125,7 @@ pub fn parse_link(input: &str) -> Result<Link> {
     let with_scheme = if input.contains("://") { input.to_string() } else { format!("https://{input}") };
     let url = Url::parse(&with_scheme).map_err(|_| anyhow::anyhow!("That doesn't look like a link"))?;
     let host = url.host_str().unwrap_or_default().trim_start_matches("www.").to_ascii_lowercase();
-    let segments: Vec<&str> =
-        url.path_segments().map(|s| s.filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+    let segments: Vec<&str> = url.path_segments().map(|s| s.filter(|s| !s.is_empty()).collect()).unwrap_or_default();
     let query = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned());
 
     match host.as_str() {
@@ -111,12 +139,8 @@ pub fn parse_link(input: &str) -> Result<Link> {
                         None => bail!("YouTube link is missing the video id"),
                     },
                 },
-                ["playlist"] | ["browse", _] if list.is_some() => {
-                    Ok(Link::YouTubePlaylist { list: list.unwrap() })
-                }
-                ["browse", id] if id.starts_with("VL") => {
-                    Ok(Link::YouTubePlaylist { list: id[2..].to_string() })
-                }
+                ["playlist"] | ["browse", _] if list.is_some() => Ok(Link::YouTubePlaylist { list: list.unwrap() }),
+                ["browse", id] if id.starts_with("VL") => Ok(Link::YouTubePlaylist { list: id[2..].to_string() }),
                 ["shorts" | "live" | "embed" | "v", id] if youtube::is_video_id(id) => {
                     Ok(Link::YouTubeVideo { id: id.to_string(), list })
                 }
@@ -124,9 +148,7 @@ pub fn parse_link(input: &str) -> Result<Link> {
             }
         }
         "youtu.be" => match segments.as_slice() {
-            [id] if youtube::is_video_id(id) => {
-                Ok(Link::YouTubeVideo { id: id.to_string(), list: query("list") })
-            }
+            [id] if youtube::is_video_id(id) => Ok(Link::YouTubeVideo { id: id.to_string(), list: query("list") }),
             _ => bail!("Unsupported youtu.be link"),
         },
         "on.soundcloud.com" => Ok(Link::SoundCloudShort { url: url.to_string() }),
@@ -165,9 +187,7 @@ pub fn http() -> &'static ureq::Agent {
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
-            .user_agent(
-                "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
-            )
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0")
             .http_status_as_error(false)
             .build()
             .into()
@@ -243,8 +263,9 @@ pub fn resolve(
     match native {
         Ok(r) => Ok(r),
         // Login-required lists have nothing to gain from the fallback.
-        Err(err) if matches!(link, Link::SoundCloudMyLikes)
-            || matches!(link, Link::YouTubePlaylist { list } if youtube::is_personal_list(list) && yt_auth.is_none()) =>
+        Err(err)
+            if matches!(link, Link::SoundCloudMyLikes)
+                || matches!(link, Link::YouTubePlaylist { list } if youtube::is_personal_list(list) && yt_auth.is_none()) =>
         {
             Err(err)
         }
@@ -254,9 +275,8 @@ pub fn resolve(
                 Platform::YouTube => creds.get(Platform::YouTube),
                 Platform::SoundCloud => creds.get(Platform::SoundCloud),
             };
-            ytdlp_fallback(link, as_collection, ytdlp, cookies).map_err(|e2| {
-                anyhow::anyhow!("{err:#}\n(yt-dlp fallback also failed: {e2:#})")
-            })
+            ytdlp_fallback(link, as_collection, ytdlp, cookies)
+                .map_err(|e2| anyhow::anyhow!("{err:#}\n(yt-dlp fallback also failed: {e2:#})"))
         }
     }
 }
@@ -306,11 +326,7 @@ fn track_from_ytdlp(v: &serde_json::Value, platform: Platform) -> Option<Track> 
         _ => return None,
     };
     let title = v["title"].as_str()?.to_string();
-    let artist = ["artist", "uploader", "channel"]
-        .iter()
-        .find_map(|k| v[*k].as_str())
-        .unwrap_or_default()
-        .to_string();
+    let artist = ["artist", "uploader", "channel"].iter().find_map(|k| v[*k].as_str()).unwrap_or_default().to_string();
     let url = match platform {
         Platform::YouTube => format!("https://www.youtube.com/watch?v={id}"),
         Platform::SoundCloud => v["webpage_url"]

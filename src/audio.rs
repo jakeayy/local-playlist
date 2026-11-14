@@ -145,8 +145,8 @@ pub struct Audio {
 
 impl Audio {
     pub fn new(volume: f32) -> Result<Self> {
-        let mut sink = rodio::DeviceSinkBuilder::open_default_sink()
-            .context("could not open the default audio output device")?;
+        let mut sink =
+            rodio::DeviceSinkBuilder::open_default_sink().context("could not open the default audio output device")?;
         sink.log_on_drop(false);
         let player = Player::connect_new(sink.mixer());
         player.set_volume(volume);
@@ -158,7 +158,9 @@ impl Audio {
     pub fn load(&mut self, input: Input) {
         self.stop();
         let shared = Arc::new(Shared::default());
-        shared.streaming.store(matches!(&input, Input::Stream(d) if matches!(d.state(), DlState::Running)), Ordering::Relaxed);
+        shared
+            .streaming
+            .store(matches!(&input, Input::Stream(d) if matches!(d.state(), DlState::Running)), Ordering::Relaxed);
         shared.buffering.store(true, Ordering::Relaxed);
         let (ctrl_tx, ctrl_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();

@@ -4,10 +4,10 @@
 #[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
 
-#[cfg(any(not(target_family = "wasm"), feature = "ui"))]
-use anyhow::{Context as _, Result};
 #[cfg(not(target_family = "wasm"))]
 use anyhow::bail;
+#[cfg(any(not(target_family = "wasm"), feature = "ui"))]
+use anyhow::{Context as _, Result};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::model::{Paths, Platform};
@@ -331,7 +331,11 @@ mod tests {
         image::RgbaImage::from_fn(160, 90, |x, y| {
             let inside = (20..140).contains(&x) && (10..80).contains(&y);
             // Noisy near-black bars, like JPEG artifacts.
-            if inside { image::Rgba([200, 120, (x * 2) as u8, 255]) } else { image::Rgba([(x % 3 * 7) as u8, 6, 9, 255]) }
+            if inside {
+                image::Rgba([200, 120, (x * 2) as u8, 255])
+            } else {
+                image::Rgba([(x % 3 * 7) as u8, 6, 9, 255])
+            }
         })
     }
 
@@ -422,9 +426,16 @@ mod tests {
         assert!(ok.success());
         let cover = std::fs::read(&pic).unwrap();
         let pcm = |p: &std::path::Path| {
-            Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(p).args(["-map", "0:a", "-f", "s16le", "-"]).output().unwrap()
+            Command::new("ffmpeg")
+                .args(["-v", "error", "-i"])
+                .arg(p)
+                .args(["-map", "0:a", "-f", "s16le", "-"])
+                .output()
+                .unwrap()
         };
-        for (ext, codec) in [("m4a", "aac"), ("mp3", "libmp3lame"), ("opus", "libopus"), ("ogg", "libvorbis"), ("flac", "flac")] {
+        for (ext, codec) in
+            [("m4a", "aac"), ("mp3", "libmp3lame"), ("opus", "libopus"), ("ogg", "libvorbis"), ("flac", "flac")]
+        {
             let file = dir.join(format!("song.{ext}"));
             let ok = Command::new("ffmpeg")
                 .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=duration=1", "-c:a", codec])
@@ -438,7 +449,12 @@ mod tests {
             assert!(after.stderr.is_empty(), "{ext}: {}", String::from_utf8_lossy(&after.stderr));
             assert_eq!(before, after.stdout, "{ext}: audio changed");
             let probe = Command::new("ffprobe")
-                .args(["-v", "error", "-show_entries", "stream=codec_type,width,height:stream_disposition=attached_pic"])
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_type,width,height:stream_disposition=attached_pic",
+                ])
                 .args(["-of", "compact"])
                 .arg(&file)
                 .output()
@@ -447,7 +463,11 @@ mod tests {
             assert!(out.contains("width=180|height=180") && out.contains("attached_pic=1"), "{ext}: {out}");
             // Embedding again replaces the cover instead of adding another.
             embed(&file, &cover).unwrap();
-            let again = Command::new("ffprobe").args(["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0"]).arg(&file).output().unwrap();
+            let again = Command::new("ffprobe")
+                .args(["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0"])
+                .arg(&file)
+                .output()
+                .unwrap();
             assert_eq!(String::from_utf8_lossy(&again.stdout).matches("video").count(), 1, "{ext}");
         }
         let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();

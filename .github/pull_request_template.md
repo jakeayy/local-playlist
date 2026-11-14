@@ -18,6 +18,7 @@
 
 ## Testing
 
+- [ ] `cargo fmt`
 - [ ] `cargo test`
 - [ ] `cargo build --no-default-features --features server` (server-only build still compiles)
 - [ ] `./scripts/build-web.sh` if shared UI code changed (the wasm build compiles)

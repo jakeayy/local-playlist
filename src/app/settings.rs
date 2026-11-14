@@ -213,10 +213,7 @@ impl LocalPlaylist {
                 self.persist_creds();
                 self.cookie_target = None;
                 self.cookie_input.update(cx, |i, cx| i.set_value("", window, cx));
-                window.push_notification(
-                    Notification::success(format!("Saved {n} {} cookies", p.label())),
-                    cx,
-                );
+                window.push_notification(Notification::success(format!("Saved {n} {} cookies", p.label())), cx);
             }
             Err(e) => window.push_notification(Notification::warning(format!("{e:#}")), cx),
         }
@@ -259,20 +256,19 @@ impl LocalPlaylist {
                 .border_color(theme.border)
                 .bg(theme.warning.alpha(0.12))
                 .child(Icon::new(IconName::Download).text_color(theme.warning))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
-                        .child(div().text_sm().child(text))
-                        .when_some(installing.and_then(|(_, f)| f), |d, f| {
-                            d.child(
-                                div().h(px(4.)).w_full().rounded_full().bg(theme.muted).child(
-                                    div().h_full().rounded_full().bg(theme.primary).w(relative(f.clamp(0., 1.))),
-                                ),
-                            )
-                        }),
-                )
+                .child(v_flex().flex_1().min_w_0().gap_1().child(div().text_sm().child(text)).when_some(
+                    installing.and_then(|(_, f)| f),
+                    |d, f| {
+                        d.child(
+                            div()
+                                .h(px(4.))
+                                .w_full()
+                                .rounded_full()
+                                .bg(theme.muted)
+                                .child(div().h_full().rounded_full().bg(theme.primary).w(relative(f.clamp(0., 1.)))),
+                        )
+                    },
+                ))
                 .when(self.installing.is_none() && !missing.is_empty(), |d| {
                     d.child(
                         Button::new("setup-download")
@@ -290,7 +286,9 @@ impl LocalPlaylist {
                             .ghost()
                             .small()
                             .label("Use system tools")
-                            .tooltip("Use yt-dlp and a JavaScript runtime (deno/node/bun/qjs) installed on this computer")
+                            .tooltip(
+                                "Use yt-dlp and a JavaScript runtime (deno/node/bun/qjs) installed on this computer",
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.set_source(Component::YtDlp, Source::System, window, cx);
                                 this.set_source(Component::JsRuntime, Source::System, window, cx);
@@ -740,7 +738,10 @@ impl LocalPlaylist {
 
     fn change_music_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.downloads.is_empty() {
-            window.push_notification(Notification::warning("Wait for downloads to finish before moving the music folder."), cx);
+            window.push_notification(
+                Notification::warning("Wait for downloads to finish before moving the music folder."),
+                cx,
+            );
             return;
         }
         let rx = cx.prompt_for_paths(PathPromptOptions {
@@ -793,7 +794,8 @@ impl LocalPlaylist {
                 let note = if errors.is_empty() {
                     Notification::success(format!("Music folder is now {}", new_root.display()))
                 } else {
-                    Notification::error(format!("Some folders couldn't be moved: {}", errors.join("; "))).autohide(false)
+                    Notification::error(format!("Some folders couldn't be moved: {}", errors.join("; ")))
+                        .autohide(false)
                 };
                 window.push_notification(note, cx);
                 cx.notify();

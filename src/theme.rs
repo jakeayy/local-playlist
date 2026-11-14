@@ -83,9 +83,7 @@ fn recolor(json: &str, from: Option<(f32, f32)>, to: Option<(f32, f32)>, t: f32)
         rest = &rest[i + 1..];
         let hex_len = rest[1..].bytes().take_while(u8::is_ascii_hexdigit).count();
         let hex = &rest[1..1 + hex_len];
-        let parsed = (hex_len == 6 || hex_len == 8)
-            .then(|| u32::from_str_radix(&hex[..6], 16).ok())
-            .flatten();
+        let parsed = (hex_len == 6 || hex_len == 8).then(|| u32::from_str_radix(&hex[..6], 16).ok()).flatten();
         match parsed {
             Some(rgb) => {
                 let (r, g, b) = ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
