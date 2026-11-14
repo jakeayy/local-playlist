@@ -164,6 +164,14 @@ cargo test -- --ignored          # live tests against YouTube / SoundCloud / Git
 local-playlist --version         # version + commit, for bug reports
 ```
 
+Builds for Linux and Windows (x64) are published on the Releases page by GitHub Actions:
+
+- Every push to `main` that changes the code is built and published as the pre-release
+  `dev-<commit>`, replacing the previous one (`.github/workflows/dev.yml`).
+- Bumping `version` in `Cargo.toml` publishes the release `v<version>` and removes the
+  development pre-release (`.github/workflows/release.yml`). It can also be run by hand
+  from the Actions tab (Release → Run workflow).
+
 Release builds use full LTO with a single codegen unit (smaller, at least as fast, but
 slower to compile). The web build uses the size-focused `wasm-release` profile plus
 `wasm-opt`.

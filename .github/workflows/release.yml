@@ -1,0 +1,149 @@
+# Releases: builds Linux and Windows (each on its own runner) and publishes
+# them as the release v<version>, the version being Cargo.toml's. Runs when a
+# push to main bumps that version, or by hand (Actions → Release → Run
+# workflow). The development pre-release (see dev.yml) is removed, since the
+# release supersedes it.
+
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check the version
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          version() { sed -n 's/^version = "\(.*\)"$/\1/p' | head -n1; }
+          now=$(version < Cargo.toml)
+          echo "version=$now" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = workflow_dispatch ]; then
+            release=true
+          else
+            # The commit before this push (or the parent, for a new branch / forced push).
+            if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base=$BEFORE; else base=HEAD^; fi
+            before=$(git show "$base:Cargo.toml" 2>/dev/null | version || true)
+            echo "version: ${before:-none} -> $now"
+            if [ "$before" != "$now" ]; then release=true; else release=false; fi
+          fi
+          if [ "$release" = true ] && git rev-parse -q --verify "refs/tags/v$now" >/dev/null; then
+            if [ "$EVENT" = workflow_dispatch ]; then
+              echo "::error::v$now is already released. Bump the version in Cargo.toml first."
+              exit 1
+            fi
+            echo "v$now already exists; nothing to release."
+            release=false
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    env:
+      PACKAGE: local-playlist-${{ needs.check.outputs.version }}-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libwebkit2gtk-4.1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/$PACKAGE"
+          cp target/release/local-playlist target/release/local-playlist-login README.md "dist/$PACKAGE/"
+          tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
+
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist/$env:PACKAGE" | Out-Null
+          Copy-Item target/release/local-playlist.exe, target/release/local-playlist-login.exe, README.md "dist/$env:PACKAGE/"
+          Compress-Archive -Path "dist/$env:PACKAGE" -DestinationPath "dist/$env:PACKAGE.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          {
+            echo "**Downloads:** \`*-linux-x64.tar.gz\` (Linux x64) and \`*-windows-x64.zip\` (Windows x64). Keep \`local-playlist-login\` next to \`local-playlist\`: it's the window used for logging in to YouTube / SoundCloud (on Linux it needs WebKitGTK 4.1)."
+            echo
+          } > notes.md
+          gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --latest \
+            --title "Local Playlist $VERSION" --notes-file notes.md --generate-notes
+
+          # The release supersedes the development pre-release.
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease and (.tagName | startswith("dev-"))) | .tagName' |
+            while read -r old; do
+              echo "Removing $old"
+              gh release delete "$old" --cleanup-tag --yes
+            done

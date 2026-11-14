@@ -1,0 +1,163 @@
+# Development builds: every push to main that changes the code is built for
+# Linux and Windows (each on its own runner) and published as the pre-release
+# `dev-<commit>`, replacing the previous one. A push that bumps the version in
+# Cargo.toml is left to release.yml, which publishes it as v<version>.
+
+name: Dev build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "assets/**"
+      - "web/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/dev.yml"
+
+# A newer push supersedes a build still running.
+concurrency:
+  group: dev-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check for a version bump
+    runs-on: ubuntu-24.04
+    outputs:
+      bump: ${{ steps.check.outputs.bump }}
+      label: ${{ steps.check.outputs.label }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          version() { sed -n 's/^version = "\(.*\)"$/\1/p' | head -n1; }
+          now=$(version < Cargo.toml)
+          # The commit before this push (or the parent, for a new branch / forced push).
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base=$BEFORE; else base=HEAD^; fi
+          before=$(git show "$base:Cargo.toml" 2>/dev/null | version || true)
+          echo "version: ${before:-none} -> $now"
+          if [ "$before" != "$now" ]; then
+            echo "Version bump: release.yml publishes this push."
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "label=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: check
+    if: needs.check.outputs.bump == 'false'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    env:
+      PACKAGE: local-playlist-${{ needs.check.outputs.label }}-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libwebkit2gtk-4.1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/$PACKAGE"
+          cp target/release/local-playlist target/release/local-playlist-login README.md "dist/$PACKAGE/"
+          tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
+
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist/$env:PACKAGE" | Out-Null
+          Copy-Item target/release/local-playlist.exe, target/release/local-playlist-login.exe, README.md "dist/$env:PACKAGE/"
+          Compress-Archive -Path "dist/$env:PACKAGE" -DestinationPath "dist/$env:PACKAGE.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish pre-release
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.label }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          # A release may already contain this commit (a version bump pushed
+          # meanwhile): then this build is out of date.
+          latest=$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -n "$latest" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$latest" 2>/dev/null; then
+            echo "Release $latest already includes $GITHUB_SHA; not publishing."
+            exit 0
+          fi
+
+          {
+            echo "Development build of ${GITHUB_SHA::7} on \`main\`. It may be unstable; the latest release is under Releases."
+            echo
+            echo "**Changes:**"
+            echo
+            echo "$MESSAGE"
+            echo
+            echo "**Downloads:** \`*-linux-x64.tar.gz\` (Linux x64) and \`*-windows-x64.zip\` (Windows x64). Keep \`local-playlist-login\` next to \`local-playlist\`: it's the window used for logging in to YouTube / SoundCloud (on Linux it needs WebKitGTK 4.1)."
+          } > notes.md
+          gh release create "$TAG" dist/* --prerelease --target "$GITHUB_SHA" \
+            --title "Development build ${GITHUB_SHA::7}" --notes-file notes.md
+
+          # Only the newest development build is kept.
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease and (.tagName | startswith("dev-"))) | .tagName' |
+            while read -r old; do
+              if [ "$old" != "$TAG" ]; then
+                echo "Removing $old"
+                gh release delete "$old" --cleanup-tag --yes
+              fi
+            done
