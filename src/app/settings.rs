@@ -596,8 +596,32 @@ impl LocalPlaylist {
                                             cx.notify();
                                         }))
                                 }),
-                            )),
+                            ))
+                            .child(
+                                h_flex()
+                                    .gap_4()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(div().text_sm().font_medium().child("Colours from cover art"))
+                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
+                                                "Tint the accent colour with the dominant colour of the playing track's cover.",
+                                            )),
+                                    )
+                                    .child(
+                                        gpui_kit::component::switch::Switch::new("cover-colors")
+                                            .checked(self.library.settings.cover_colors)
+                                            .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                                this.library.settings.cover_colors = *on;
+                                                this.save();
+                                                this.apply_cover_colors(cx);
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
                     )
+                    .child(self.render_sponsorblock(cx))
                     .when(crate::WEB, |d| {
                         d.child(
                             v_flex()
@@ -661,6 +685,57 @@ impl LocalPlaylist {
                     ))
                     .when(!crate::WEB, |d| d.child(self.render_storage(cx))),
             )
+    }
+
+    fn render_sponsorblock(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::checkbox::Checkbox;
+        use gpui_kit::component::switch::Switch;
+        let theme = cx.theme().clone();
+        let settings = &self.library.settings;
+        let enabled = settings.sponsorblock;
+        v_flex()
+            .gap_3()
+            .child(
+                h_flex()
+                    .gap_4()
+                    .justify_between()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(div().text_lg().font_semibold().child("SponsorBlock"))
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                                "Skip parts of YouTube tracks marked by the SponsorBlock community. Files aren't cut; playback jumps past the segments. Lookups send only a short hash prefix, not the video id.",
+                            )),
+                    )
+                    .child(Switch::new("sponsorblock").checked(enabled).on_click(cx.listener(|this, on: &bool, _, cx| {
+                        this.library.settings.sponsorblock = *on;
+                        this.save();
+                        cx.notify();
+                    }))),
+            )
+            .when(enabled, |d| {
+                d.child(
+                    v_flex().gap_2().p_4().rounded_lg().border_1().border_color(theme.border).children(
+                        crate::sponsorblock::CATEGORIES.iter().map(|&(key, label, desc, _)| {
+                            let checked = settings.sponsorblock_categories.iter().any(|c| c == key);
+                            h_flex()
+                                .gap_3()
+                                .child(Checkbox::new(key).label(label).checked(checked).on_click(cx.listener(
+                                    move |this, on: &bool, _, cx| {
+                                        let cats = &mut this.library.settings.sponsorblock_categories;
+                                        cats.retain(|c| c != key);
+                                        if *on {
+                                            cats.push(key.to_string());
+                                        }
+                                        this.save();
+                                        cx.notify();
+                                    },
+                                )))
+                                .child(div().text_sm().text_color(theme.muted_foreground).child(desc))
+                        }),
+                    ),
+                )
+            })
     }
 
     fn change_music_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -731,7 +806,18 @@ impl LocalPlaylist {
         let theme = cx.theme().clone();
         let root = self.music_root();
         let removed = storage::removed_dir(&self.paths);
-        let used = storage::dir_size(&removed) as f64 / 1e6;
+        // Measured at most every few seconds: this page redraws while playing,
+        // and measuring stats every file in the cache.
+        let now = crate::now_ms();
+        let used = match self.removed_size {
+            Some((bytes, at)) if now - at < 5000.0 => bytes,
+            _ => {
+                let bytes = storage::dir_size(&removed);
+                self.removed_size = Some((bytes, now));
+                bytes
+            }
+        } as f64
+            / 1e6;
         let limit = self.library.settings.removed_cache_mb;
         v_flex()
             .gap_3()

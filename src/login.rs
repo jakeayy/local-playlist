@@ -1,168 +1,42 @@
-//! Webview login helper.
+//! Platform login through a webview.
 //!
-//! Runs as a separate process (`local-playlist --login <platform>`) so the main
-//! GPUI window keeps its native backend. It opens the platform's normal login
-//! page in an incognito webview (nothing is written to disk), waits until the
-//! session cookie appears, prints the cookies as JSON on stdout and exits.
-//! No OAuth apps or client ids are involved: it is the same session a browser
-//! would get.
+//! The webview runs in a separate executable, `local-playlist-login` (see
+//! `src/bin/login.rs`), installed next to the app. That keeps the main GPUI
+//! process on its native backend and keeps the webview libraries (WebKitGTK
+//! and GTK on Linux) out of its memory entirely. The helper prints the session
+//! cookies as JSON on stdout once the user has signed in.
 
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, bail};
-use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::window::WindowBuilder;
-use wry::WebViewBuilder;
 
 use crate::model::Platform;
 use crate::secrets::StoredCookie;
 
-pub const LOGIN_ARG: &str = "--login";
+/// File name of the helper executable.
+pub const HELPER: &str = "local-playlist-login";
 
-/// A Firefox user agent for the current OS. Google is less likely to flag a
-/// common desktop browser than an unknown embedded engine. Firefox doesn't
-/// send client hints, so the UA string alone is consistent.
-pub fn firefox_user_agent() -> String {
-    // Firefox ships every 4 weeks; 128 was released 2024-07-09.
-    let days = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() / 86_400)
-        .unwrap_or(0);
-    let base_day = 19_913; // 2024-07-09
-    let version = 128 + days.saturating_sub(base_day) / 28;
-    let platform = if cfg!(target_os = "windows") {
-        "Windows NT 10.0; Win64; x64".to_string()
-    } else if cfg!(target_os = "macos") {
-        "Macintosh; Intel Mac OS X 10.15".to_string()
-    } else if cfg!(target_arch = "aarch64") {
-        "X11; Linux aarch64".to_string()
-    } else {
-        "X11; Linux x86_64".to_string()
-    };
-    format!("Mozilla/5.0 ({platform}; rv:{version}.0) Gecko/20100101 Firefox/{version}.0")
-}
-
-struct Target {
-    title: &'static str,
-    start_url: &'static str,
-    cookie_urls: &'static [&'static str],
-    /// Login is complete once any of these cookies exists.
-    session_cookies: &'static [&'static str],
-}
-
-fn target(platform: Platform) -> Target {
-    match platform {
-        Platform::YouTube => Target {
-            title: "Log in to YouTube — Local Playlist",
-            start_url: "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F",
-            cookie_urls: &["https://www.youtube.com/"],
-            session_cookies: &["SAPISID", "__Secure-3PAPISID"],
-        },
-        Platform::SoundCloud => Target {
-            title: "Log in to SoundCloud — Local Playlist",
-            start_url: "https://soundcloud.com/signin",
-            cookie_urls: &["https://soundcloud.com/", "https://api-v2.soundcloud.com/"],
-            session_cookies: &["oauth_token"],
-        },
-    }
-}
-
-/// Entry point of the helper process. Never returns.
-pub fn run_helper(platform_arg: &str) -> ! {
-    let code = match helper(platform_arg) {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("{e:#}");
-            1
-        }
-    };
-    std::process::exit(code)
-}
-
-fn helper(platform_arg: &str) -> Result<()> {
-    let platform = match platform_arg {
-        "youtube" => Platform::YouTube,
-        "soundcloud" => Platform::SoundCloud,
-        other => bail!("unknown platform {other}"),
-    };
-    let t = target(platform);
-
-    let event_loop = EventLoopBuilder::new().build();
-    let window = WindowBuilder::new()
-        .with_title(t.title)
-        .with_inner_size(tao::dpi::LogicalSize::new(520.0, 760.0))
-        .build(&event_loop)
-        .context("could not open login window")?;
-
-    let builder = WebViewBuilder::new()
-        .with_url(t.start_url)
-        .with_user_agent(firefox_user_agent())
-        .with_incognito(true);
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let webview = {
-        use tao::platform::unix::WindowExtUnix as _;
-        use wry::WebViewBuilderExtUnix as _;
-        builder.build_gtk(window.default_vbox().context("no GTK container")?)?
-    };
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let webview = builder.build(&window)?;
-
-    let mut last_check = Instant::now();
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(750));
-        let _ = &window;
-        match event {
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-                eprintln!("Login window closed before signing in");
-                std::process::exit(2);
-            }
-            Event::NewEvents(_) if last_check.elapsed() >= Duration::from_millis(700) => {
-                last_check = Instant::now();
-                let mut cookies = Vec::new();
-                for url in t.cookie_urls {
-                    if let Ok(list) = webview.cookies_for_url(url) {
-                        cookies.extend(list.iter().map(StoredCookie::from_cookie));
-                    }
-                }
-                cookies.sort_by(|a, b| (&a.domain, &a.name).cmp(&(&b.domain, &b.name)));
-                cookies.dedup_by(|a, b| a.domain == b.domain && a.name == b.name && a.path == b.path);
-                let logged_in = cookies
-                    .iter()
-                    .any(|c| t.session_cookies.contains(&c.name.as_str()) && !c.value.is_empty());
-                // For YouTube wait until we're back on youtube.com so all cookies are set.
-                let on_site = match platform {
-                    Platform::YouTube => webview.url().is_ok_and(|u| u.contains("youtube.com")),
-                    Platform::SoundCloud => true,
-                };
-                if logged_in && on_site {
-                    match serde_json::to_string(&cookies) {
-                        Ok(json) => {
-                            println!("{json}");
-                            std::process::exit(0);
-                        }
-                        Err(e) => {
-                            eprintln!("{e}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    })
+/// Where the helper is expected: next to the running executable.
+fn helper_path() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot locate own executable")?;
+    Ok(exe.with_file_name(format!("{HELPER}{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// Launch the helper and wait for cookies (blocking; run in background).
 pub fn login(platform: Platform) -> Result<Vec<StoredCookie>> {
-    let exe = std::env::current_exe().context("cannot locate own executable")?;
+    let helper = helper_path()?;
+    if !helper.is_file() {
+        bail!(
+            "The login window ({}) is missing. It ships next to local-playlist; when building from \
+             source, `cargo build --release` builds both.",
+            helper.display()
+        );
+    }
     let arg = match platform {
         Platform::YouTube => "youtube",
         Platform::SoundCloud => "soundcloud",
     };
-    let out = std::process::Command::new(exe)
-        .arg(LOGIN_ARG)
+    let out = std::process::Command::new(&helper)
         .arg(arg)
         .stdin(std::process::Stdio::null())
         .output()

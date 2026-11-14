@@ -19,6 +19,13 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
   downloaded instead of waiting for the whole file, and you can seek while it's still
   downloading. Play/pause, next/previous, volume, shuffle, and repeat (playlist / track)
   are all there. The next track is prefetched so playback continues without a gap.
+- **Search** filters a playlist by title or artist.
+- **SponsorBlock:** non-music parts, sponsors, self-promotion and "like and subscribe"
+  reminders in YouTube tracks are skipped using
+  [SponsorBlock](https://sponsor.ajay.app/) data. Files aren't cut, so durations stay
+  correct; playback just jumps past the segments. Categories (also intros, outros,
+  previews, filler) can be chosen in Settings, or the feature turned off. Segments are
+  cached so skipping works offline.
 - **Real files on disk:** tracks are saved as
   `<Music>/local-playlist/<Playlist name>/<Platform>-<id>.m4a`, so they play offline and
   in any player. "Download all" fetches a whole playlist. Renaming a playlist renames its
@@ -56,7 +63,9 @@ Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, an
 - Audio is downloaded by yt-dlp into your music folder (configurable in Settings → Storage)
   and played locally. Removed tracks wait in `~/.cache/local-playlist/removed/` up to the
   size limit.
-- The only network destinations are YouTube, SoundCloud, and their CDNs. GitHub is
+- The only network destinations are YouTube, SoundCloud, their CDNs, and SponsorBlock
+  (`sponsor.ajay.app`, unless turned off). SponsorBlock lookups send only the first 4
+  characters of the video id's SHA-256 hash, shared by many videos. GitHub is
   contacted only to download or update components.
 
 ## Web version (self-hosted)
@@ -69,6 +78,9 @@ LOCAL_PLAYLIST_PASSWORD='a long password' local-playlist --server --listen 0.0.0
 ```
 
 Open `http://<host>:8080`, enter the password, and use it like the desktop app.
+
+`--server` is in builds with the `server` feature (the Docker image, or
+`cargo build --release --features server`; see below).
 
 - **Privacy:** your playlists and settings stay in the browser (local storage). The server
   only looks up public links and streams their audio. It never receives platform logins,
@@ -104,7 +116,7 @@ rustup toolchain install nightly --profile minimal --target wasm32-unknown-unkno
 cargo install wasm-bindgen-cli --version <wasm-bindgen version from Cargo.lock> --locked
 # optional, shrinks the download ~40%: wasm-opt from https://github.com/WebAssembly/binaryen/releases
 ./scripts/build-web.sh      # writes web/dist/
-cargo build --release       # desktop app + server, embeds web/dist
+cargo build --release --features server   # desktop app + server, embeds web/dist
 ```
 
 Without `web/dist`, `--server` still runs but serves only the API.
@@ -116,13 +128,16 @@ image uses):
 cargo build --release --no-default-features --features server
 ```
 
-Cargo features: `desktop` (GPUI app, audio, webview login, keyring; implies `ui`) and
-`server` are both on by default. The browser build uses only `ui`.
+Cargo features: `desktop` (GPUI app, audio, webview login, keyring; implies `ui`) is on
+by default. `server` adds `--server`; it embeds the web UI (~6 MB), so it's opt-in for
+desktop builds. The browser build uses only `ui`.
 
 ## Requirements
 
 Runtime: nothing beyond the OS. yt-dlp and QuickJS are downloaded by the app.
-**ffmpeg** is optional; when present it remuxes downloads into plain m4a.
+**ffmpeg** is optional. Downloads are turned into plain m4a files with the cover
+embedded either way (built in); ffmpeg, when present, is used for that conversion
+instead and can also convert the rare tracks without AAC/MP3 audio.
 If you choose "System" components instead, you need `yt-dlp` and one of `deno`/`node`/
 `bun`/`qjs` on `PATH`.
 
@@ -130,8 +145,14 @@ Build the desktop app (Fedora package names):
 
 ```sh
 sudo dnf install alsa-lib-devel webkit2gtk4.1-devel gtk3-devel dbus-devel
-cargo run --release
+cargo build --release
+target/release/local-playlist
 ```
+
+This builds two executables: the app, `local-playlist`, and its login window,
+`local-playlist-login`, which the app starts from its own folder when you log in to a
+platform. Keep them side by side. (The login window is separate so the app itself never
+loads the webview libraries. `cargo run` builds only the app.)
 
 The server-only build needs none of these.
 
@@ -162,7 +183,8 @@ Layout:
 | `src/sources/` | Link parsing; YouTube and SoundCloud metadata |
 | `src/app/settings.rs` | Settings page: accounts and components |
 | `src/ytdlp.rs` | Components (yt-dlp build, QuickJS), metadata fallback, audio download |
-| `src/login.rs` | Webview login helper process (`local-playlist --login <platform>`) |
+| `src/login.rs` | Starts the login window and reads the session cookies it returns |
+| `src/bin/login.rs` | The login window (`local-playlist-login <platform>`), a webview |
 | `src/secrets.rs` | Encrypted cookie storage, cookie parsing |
 | `src/server.rs` | `--server`: web UI, auth, resolve and audio streaming API |
 | `src/web/` | Browser build: entry point, server API client, `<audio>` playback, stand-ins |

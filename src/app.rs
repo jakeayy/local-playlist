@@ -1,9 +1,14 @@
 //! Main window: sidebar with playlists, track list, and player bar.
 
+mod backdrop;
+mod progress;
 mod settings;
+mod thumbs;
+mod visualizer;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -29,12 +34,22 @@ use gpui_kit::component::input::TextareaState;
 
 use crate::audio::Input as AudioInput;
 use crate::download::Download;
+use crate::sponsorblock::Segment;
 use crate::storage;
 
 #[derive(Clone)]
 struct NowPlaying {
     playlist_id: String,
     track: Track,
+}
+
+/// Rows of the selected playlist a search shows.
+struct FilterCache {
+    playlist_id: String,
+    query: String,
+    library_rev: u64,
+    /// Indices into the playlist's tracks.
+    rows: Rc<Vec<usize>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,15 +96,35 @@ pub struct LocalPlaylist {
     download_errors: HashMap<PathBuf, String>,
     /// File stems present in each playlist folder (rescanned lazily).
     on_disk: HashMap<PathBuf, std::collections::HashSet<String>>,
+    /// Size of the removed-tracks cache and when it was measured (Settings).
+    removed_size: Option<(u64, f64)>,
     /// Playlist whose folder should follow its (edited) name, and when it was last edited.
     pending_folder_rename: Option<(String, f64)>,
+    /// When unsaved library changes were made (saved after a pause; see `save_later`).
+    save_due: Option<f64>,
+    /// Bumped on every library change (they all save), to invalidate caches.
+    library_rev: u64,
+    /// Rows a search shows (see `filtered_rows`).
+    filter_cache: Option<FilterCache>,
+    /// SponsorBlock segments by YouTube video id, with when they were fetched.
+    segments: HashMap<String, (f64, Vec<Segment>)>,
+    /// Video ids whose segments are being fetched.
+    segments_loading: std::collections::HashSet<String>,
+    /// Last SponsorBlock jump (target secs, when), so a slow seek isn't repeated.
+    last_skip: Option<(f64, f64)>,
 
     url_input: Entity<InputState>,
     import_input: Entity<InputState>,
     name_input: Entity<InputState>,
+    search_input: Entity<InputState>,
     seek: Entity<SliderState>,
     volume: Entity<SliderState>,
     seeking: Option<f32>,
+    /// The seek row of the player bar (see `progress.rs`).
+    progress: Entity<progress::Progress>,
+    /// Playback state shown outside the seek row (buffering, paused) at the
+    /// last tick, to redraw the window only when it changes.
+    last_shown: (bool, bool),
 
     adding: bool,
     importing: bool,
@@ -116,6 +151,26 @@ pub struct LocalPlaylist {
     pending_notes: Vec<Notification>,
 
     list_scroll: UniformListScrollHandle,
+    /// The rows the track list shows (indices into the selected playlist's
+    /// tracks; `None` = all), as last drawn.
+    list_rows: Option<Rc<Vec<usize>>>,
+    /// Shown in place of the track list when `show_visualizer` is on.
+    visualizer: Entity<visualizer::Visualizer>,
+    show_visualizer: bool,
+    /// Track (platform, id) whose cover the visualizer shows or is loading.
+    cover_for: Option<(Platform, String)>,
+    /// Cover of the playing track (player bar).
+    now_cover: Option<Arc<RenderImage>>,
+    /// Covers replaced by another track's, with when: dropped from GPUI's
+    /// texture atlas on a later tick, once no frame shows them.
+    stale_covers: Vec<(Arc<RenderImage>, f64)>,
+    /// Dominant (hue, saturation) of that cover, for `Settings::cover_colors`.
+    cover_accent: Option<(f32, f32)>,
+    /// Accent the theme shows (or is fading to); `None` = stock.
+    accent_shown: Option<(f32, f32)>,
+    accent_fade: Option<Task<()>>,
+    /// Track list thumbnails.
+    thumbs: thumbs::Thumbs,
     _subscriptions: Vec<Subscription>,
     _ticker: Task<()>,
 }
@@ -154,6 +209,10 @@ impl LocalPlaylist {
                 None
             }
         };
+        let visualizer = {
+            let tap = audio.as_ref().map(|a| a.tap());
+            cx.new(|_| visualizer::Visualizer::new(tap))
+        };
 
         let url_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Paste a YouTube / SoundCloud track or playlist link…")
@@ -161,6 +220,8 @@ impl LocalPlaylist {
         let import_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL"));
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name"));
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search title or artist"));
         let server_password = cx.new(|cx| InputState::new(window, cx).placeholder("Server password").masked(true));
         let cookie_input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -187,6 +248,12 @@ impl LocalPlaylist {
                     this.import_from_input(window, cx);
                 }
             }),
+            cx.subscribe_in(&search_input, window, |this, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::Change = ev {
+                    this.list_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&name_input, window, |this, input, ev: &InputEvent, _, cx| {
                 if let InputEvent::Change = ev {
                     let name = input.read(cx).value().to_string();
@@ -198,7 +265,7 @@ impl LocalPlaylist {
                         if !crate::WEB {
                             this.pending_folder_rename = Some((id.clone(), crate::now_ms()));
                         }
-                        this.save();
+                        this.save_later();
                         cx.notify();
                     }
                 }
@@ -231,7 +298,25 @@ impl LocalPlaylist {
             }),
         ];
 
+        let progress = {
+            let app = cx.weak_entity();
+            cx.new(|_| progress::Progress::new(app))
+        };
+
         let mut subscriptions = subscriptions;
+        // Write edits still waiting for `save_if_due`, whichever comes first:
+        // quitting, or the window (and with it this view) closing.
+        subscriptions.push(cx.on_app_quit(|this, _| {
+            if this.save_due.is_some() {
+                this.save();
+            }
+            async {}
+        }));
+        subscriptions.push(cx.on_release(|this, _| {
+            if this.save_due.is_some() {
+                this.save();
+            }
+        }));
         subscriptions.push(cx.observe_window_appearance(window, |this, window, cx| {
             if this.library.settings.appearance == crate::theme::Appearance::System {
                 crate::theme::apply(crate::theme::Appearance::System, Some(window), cx);
@@ -255,6 +340,13 @@ impl LocalPlaylist {
             }
         }
         let selected = library.playlists.first().map(|p| p.id.clone());
+        #[cfg(not(target_family = "wasm"))]
+        let segments = crate::sponsorblock::cache::load(&crate::sponsorblock::cache::file(&paths))
+            .into_iter()
+            .map(|(id, e)| (id, (e.fetched_ms, e.segments)))
+            .collect();
+        #[cfg(target_family = "wasm")]
+        let segments = HashMap::new();
         let mut this = Self {
             ytdlp: YtDlp::new(&paths, library.settings.ytdlp_source, library.settings.js_source),
             paths,
@@ -269,13 +361,23 @@ impl LocalPlaylist {
             batches: HashMap::new(),
             download_errors: HashMap::new(),
             on_disk: HashMap::new(),
+            removed_size: None,
             pending_folder_rename: None,
+            save_due: None,
+            library_rev: 0,
+            filter_cache: None,
+            segments,
+            segments_loading: Default::default(),
+            last_skip: None,
             url_input,
             import_input,
             name_input,
+            search_input,
             seek,
             volume,
             seeking: None,
+            progress,
+            last_shown: (false, false),
             adding: false,
             importing: false,
             view: View::Playlist,
@@ -296,6 +398,16 @@ impl LocalPlaylist {
             confirm_delete: false,
             pending_notes,
             list_scroll: UniformListScrollHandle::new(),
+            list_rows: None,
+            visualizer,
+            show_visualizer: false,
+            cover_for: None,
+            now_cover: None,
+            stale_covers: Vec::new(),
+            cover_accent: None,
+            accent_shown: None,
+            accent_fade: None,
+            thumbs: thumbs::Thumbs::default(),
             _subscriptions: subscriptions,
             _ticker: ticker,
         };
@@ -316,8 +428,24 @@ impl LocalPlaylist {
     // ---------------------------------------------------------------- state
 
     fn save(&mut self) {
+        self.save_due = None;
+        self.library_rev += 1;
         if let Err(e) = self.library.save(&self.paths.library_file()) {
             self.pending_notes.push(Notification::error(format!("Failed to save library: {e:#}")));
+        }
+    }
+
+    /// Save once edits pause (typing a playlist name would otherwise write the
+    /// whole library on every keystroke). Flushed on quit, too.
+    fn save_later(&mut self) {
+        self.save_due = Some(crate::now_ms());
+        self.library_rev += 1;
+    }
+
+    /// Write changes left by [`Self::save_later`] if edits paused long enough.
+    fn save_if_due(&mut self) {
+        if self.save_due.is_some_and(|at| crate::now_ms() - at >= 1000.0) {
+            self.save();
         }
     }
 
@@ -335,6 +463,7 @@ impl LocalPlaylist {
         self.confirm_delete = false;
         let name = self.selected_playlist().map(|p| p.name.clone()).unwrap_or_default();
         self.name_input.update(cx, |input, cx| input.set_value(name, window, cx));
+        self.search_input.update(cx, |input, cx| input.set_value("", window, cx));
         self.list_scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
@@ -359,14 +488,17 @@ impl LocalPlaylist {
         if self.now.as_ref().is_some_and(|n| n.playlist_id == id) {
             self.stop(cx);
         }
-        let idx = self.library.playlists.iter().position(|p| p.id == id).unwrap_or(0);
-        if let Some(p) = self.library.playlist(&id).cloned().filter(|_| !crate::WEB) {
-            let (paths, root, limit) = (self.paths.clone(), self.music_root(), self.removed_limit());
-            std::thread::spawn(move || storage::retire_playlist(&paths, &root, &p, limit));
+        let idx = self.library.playlists.iter().position(|p| p.id == id);
+        if let Some(idx) = idx {
+            let p = self.library.playlists.remove(idx);
+            if !crate::WEB {
+                let (paths, root, limit) = (self.paths.clone(), self.music_root(), self.removed_limit());
+                std::thread::spawn(move || storage::retire_playlist(&paths, &root, &p, limit));
+            }
         }
+        let idx = idx.unwrap_or(0);
         self.stop_batch(&id, cx);
         self.on_disk.clear();
-        self.library.playlists.retain(|p| p.id != id);
         self.save();
         let next = self
             .library
@@ -437,6 +569,7 @@ impl LocalPlaylist {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.adding = false;
+                crate::mem::trim(); // resolving parsed large JSON pages
                 match result {
                     Ok(resolved) => {
                         let tracks = resolved.into_tracks();
@@ -538,6 +671,7 @@ impl LocalPlaylist {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.importing = false;
+                crate::mem::trim(); // resolving parsed large JSON pages
                 match result {
                     Ok(Resolved::Collection { title, tracks }) => {
                         let n = tracks.len();
@@ -579,6 +713,7 @@ impl LocalPlaylist {
         let dir = storage::removed_dir(&self.paths);
         let size = storage::dir_size(&dir);
         storage::enforce_limit(&dir, 0);
+        self.removed_size = None;
         let _ = std::fs::remove_dir_all(self.paths.cache.join("audio")); // pre-0.2 flat cache
         window.push_notification(
             Notification::info(format!("Freed {:.1} MB of removed tracks", size as f64 / 1e6)),
@@ -589,9 +724,8 @@ impl LocalPlaylist {
 
     // ------------------------------------------------------------- playback
 
-    /// Start (or join) the download of `track` into `playlist`'s folder.
-    fn ensure_download(&mut self, playlist: &Playlist, track: &Track) -> Arc<Download> {
-        let dir = storage::playlist_dir(&self.music_root(), playlist);
+    /// Start (or join) the download of `track` into the playlist folder `dir`.
+    fn ensure_download(&mut self, dir: PathBuf, track: &Track) -> Arc<Download> {
         let key = track.file_key();
         let map_key = dir.join(&key);
         if let Some(d) = self.downloads.get(&map_key) {
@@ -604,7 +738,15 @@ impl LocalPlaylist {
         let (ytdlp, track, dl2) = (self.ytdlp.clone(), track.clone(), dl.clone());
         let cancel = dl.cancel.clone();
         let cookies = self.creds.get(track.platform).map(<[_]>::to_vec);
+        #[cfg(feature = "desktop")]
+        let paths = self.paths.clone();
         std::thread::spawn(move || {
+            // Fetch the cover meanwhile, to embed it.
+            #[cfg(feature = "desktop")]
+            let cover = {
+                let (paths, platform, id) = (paths, track.platform, track.source_id.clone());
+                std::thread::spawn(move || crate::cover::get(&paths, platform, &id, crate::cover::Size::Full))
+            };
             let _ = std::fs::remove_dir_all(&tmp);
             let progress = |p: f32| dl2.set_progress(p);
             // Try anonymously first; only use the session if the content needs it.
@@ -614,6 +756,27 @@ impl LocalPlaylist {
             {
                 let _ = std::fs::remove_dir_all(&tmp);
                 res = ytdlp.download(&track, &tmp, Some(c), Some(cancel.clone()), progress);
+            }
+            // Make the file self-contained for other players (best effort; never
+            // fails the download): a plain MP4 rather than streamed fragments
+            // (ffmpeg, when installed, has already done that), and the cover
+            // inside. Both swap in a new file, so streaming playback of the old
+            // one carries on undisturbed.
+            #[cfg(feature = "desktop")]
+            if let Ok(file) = &res {
+                if let Err(e) = crate::remux::defragment_file(file) {
+                    eprintln!("couldn't remux {}: {e:#}", track.title);
+                }
+                let embedded = cover
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("cover thread panicked"))
+                    .and_then(|c| c)
+                    .and_then(|c| crate::cover::square(&c, 1000))
+                    .and_then(|img| crate::cover::to_jpeg(&img))
+                    .and_then(|c| crate::cover::embed(file, &c));
+                if let Err(e) = embedded {
+                    eprintln!("no cover art for {}: {e:#}", track.title);
+                }
             }
             // Move the finished file into the playlist folder.
             let res = res.and_then(|file| {
@@ -631,20 +794,27 @@ impl LocalPlaylist {
 
     /// Local file for the track if available (reusing copies), else `None`.
     fn local_file(&self, playlist: &Playlist, track: &Track) -> Option<PathBuf> {
+        self.local_file_with(&mut storage::FileIndex::direct(), playlist, track)
+    }
+
+    /// [`Self::local_file`], finding files through `index`.
+    fn local_file_with(&self, index: &mut storage::FileIndex, playlist: &Playlist, track: &Track) -> Option<PathBuf> {
         let dir = storage::playlist_dir(&self.music_root(), playlist);
         if self.downloads.contains_key(&dir.join(track.file_key())) {
             return None;
         }
-        storage::materialize(&self.paths, &self.library, playlist, track)
+        storage::materialize_with(index, &self.paths, &self.library, playlist, track)
     }
 
     fn play(&mut self, playlist_id: &str, track_id: &str, cx: &mut Context<Self>) {
-        let Some(playlist) = self.library.playlist(playlist_id).cloned() else { return };
+        let Some(playlist) = self.library.playlist(playlist_id) else { return };
         let Some(track) = playlist.tracks.iter().find(|t| t.id == track_id).cloned() else { return };
         if self.audio.is_none() {
             self.notify_error("No audio output device available");
             return;
         }
+        #[cfg(not(target_family = "wasm"))]
+        let (dir, local) = (storage::playlist_dir(&self.music_root(), playlist), self.local_file(playlist, &track));
         let new_playlist = self.now.as_ref().is_none_or(|n| n.playlist_id != playlist_id);
         self.now = Some(NowPlaying { playlist_id: playlist_id.to_string(), track: track.clone() });
         if new_playlist || self.shuffle_order.is_empty() {
@@ -652,9 +822,9 @@ impl LocalPlaylist {
         }
         self.on_disk.clear(); // the lookup may have restored or copied a file
         #[cfg(not(target_family = "wasm"))]
-        let input = match self.local_file(&playlist, &track) {
+        let input = match local {
             Some(path) => AudioInput::File(path),
-            None => AudioInput::Stream(self.ensure_download(&playlist, &track)),
+            None => AudioInput::Stream(self.ensure_download(dir, &track)),
         };
         #[cfg(target_family = "wasm")]
         let input = AudioInput::Url(crate::web::api::audio_url(&track));
@@ -662,40 +832,225 @@ impl LocalPlaylist {
             a.load(input);
         }
         self.state = PlayState::Playing;
+        self.last_skip = None;
+        self.load_segments(&track, cx);
+        self.load_cover(&track, cx);
         if !crate::WEB {
-            self.prefetch_next();
+            self.prefetch_next(cx);
         }
         cx.notify();
     }
 
-    fn prefetch_next(&mut self) {
-        let Some(now) = &self.now else { return };
-        let Some(playlist) = self.library.playlist(&now.playlist_id).cloned() else { return };
-        if let Some(next) = self.neighbor(1, false)
-            && self.local_file(&playlist, &next).is_none()
+    /// Show the track's cover in the visualizer (fetched in the background).
+    fn load_cover(&mut self, track: &Track, cx: &mut Context<Self>) {
+        let key = (track.platform, track.source_id.clone());
+        if self.cover_for.as_ref() == Some(&key) {
+            return;
+        }
+        self.cover_for = Some(key.clone());
+        if let Some(old) = self.now_cover.take() {
+            self.stale_covers.push((old, crate::now_ms()));
+        }
+        self.visualizer.update(cx, |v, cx| {
+            v.set_cover(None);
+            cx.notify();
+        });
+        let paths = self.paths.clone();
+        cx.spawn(async move |this, cx| {
+            let (platform, id) = key.clone();
+            let image = fetch_cover(cx, paths, platform, id, crate::cover::Size::Full, 640, true).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.cover_for.as_ref() != Some(&key) {
+                    return; // another track started meanwhile
+                }
+                match image {
+                    Ok((image, accent)) => {
+                        this.cover_accent = accent;
+                        this.apply_cover_colors(cx);
+                        this.now_cover = Some(image.clone());
+                        this.visualizer.update(cx, |v, cx| {
+                            v.set_cover(Some(image));
+                            cx.notify();
+                        });
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        eprintln!("no cover art for {}: {e:#}", key.1);
+                        // Try again next time the track plays (e.g. back online).
+                        this.cover_for = None;
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Theme accent from the playing track's cover, or the stock one when the
+    /// setting is off or the cover is grey; faded in over a moment.
+    fn apply_cover_colors(&mut self, cx: &mut Context<Self>) {
+        const FADE_MS: f64 = 400.0;
+        const FRAME_MS: u64 = 25;
+        let target = self.cover_accent.filter(|_| self.library.settings.cover_colors);
+        if target == self.accent_shown {
+            return;
+        }
+        // A fade still running is dropped (cancelled); the new one starts from
+        // its target.
+        let from = std::mem::replace(&mut self.accent_shown, target);
+        if cx.reduce_motion() {
+            self.accent_fade = None;
+            crate::theme::set_accent(from, target, 1.0, self.library.settings.appearance, cx);
+            return;
+        }
+        let start = crate::now_ms();
+        self.accent_fade = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(FRAME_MS)).await;
+                let p = ((crate::now_ms() - start) / FADE_MS).min(1.0) as f32;
+                let eased = 1.0 - (1.0 - p).powi(3);
+                let updated = this.update(cx, |this, cx| {
+                    crate::theme::set_accent(from, target, eased, this.library.settings.appearance, cx)
+                });
+                if updated.is_err() || p >= 1.0 {
+                    break;
+                }
+            }
+        }));
+    }
+
+    // ---------------------------------------------------------- sponsorblock
+
+    /// Fetch the track's SponsorBlock segments in the background unless we
+    /// have fresh ones (stale ones stay in use if the fetch fails, e.g. offline).
+    fn load_segments(&mut self, track: &Track, cx: &mut Context<Self>) {
+        // Re-check now and then: segments keep being submitted and voted on.
+        const MAX_AGE_MS: f64 = 3.0 * 24.0 * 3600.0 * 1000.0;
+        if track.platform != Platform::YouTube || !self.library.settings.sponsorblock {
+            return;
+        }
+        let id = track.source_id.clone();
+        let fresh = self
+            .segments
+            .get(&id)
+            .is_some_and(|(at, _)| crate::now_ms() - at < MAX_AGE_MS);
+        if fresh || !self.segments_loading.insert(id.clone()) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            #[cfg(not(target_family = "wasm"))]
+            let res = {
+                let id = id.clone();
+                cx.background_spawn(async move { crate::sponsorblock::fetch(&id) })
+                    .await
+            };
+            #[cfg(target_family = "wasm")]
+            let res = crate::web::api::segments(&id).await;
+            let _ = this.update(cx, |this, _| {
+                this.segments_loading.remove(&id);
+                match res {
+                    Ok(segs) => {
+                        this.segments.insert(id, (crate::now_ms(), segs));
+                        this.save_segments();
+                    }
+                    Err(e) => eprintln!("SponsorBlock lookup failed for {id}: {e:#}"),
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn save_segments(&self) {
+        #[cfg(not(target_family = "wasm"))]
         {
-            self.ensure_download(&playlist, &next);
+            use crate::sponsorblock::cache;
+            let map = self
+                .segments
+                .iter()
+                .map(|(id, (at, segs))| {
+                    (
+                        id.clone(),
+                        cache::Entry {
+                            fetched_ms: *at,
+                            segments: segs.clone(),
+                        },
+                    )
+                })
+                .collect();
+            cache::save(&cache::file(&self.paths), &map);
+        }
+    }
+
+    /// Jump over a SponsorBlock segment if playback is inside one.
+    fn skip_segments(&mut self, cx: &mut Context<Self>) {
+        let settings = &self.library.settings;
+        if !settings.sponsorblock || self.seeking.is_some() {
+            return;
+        }
+        let (Some(now), Some(audio)) = (&self.now, &self.audio) else {
+            return;
+        };
+        if now.track.platform != Platform::YouTube || !audio.is_loaded() || audio.is_buffering() {
+            return;
+        }
+        let Some((_, segs)) = self.segments.get(&now.track.source_id) else {
+            return;
+        };
+        let pos = audio.position().as_secs_f64();
+        let Some(target) =
+            crate::sponsorblock::skip_target(segs, &settings.sponsorblock_categories, pos)
+        else {
+            return;
+        };
+        let t = crate::now_ms();
+        if self
+            .last_skip
+            .is_some_and(|(prev, at)| (prev - target).abs() < 0.01 && t - at < 2000.0)
+        {
+            return;
+        }
+        self.last_skip = Some((target, t));
+        let total = self.total_duration().map(|d| d.as_secs_f64());
+        if total.is_some_and(|total| target >= total - 1.0) {
+            // The segment runs to the end: go straight to the next track.
+            self.skip(1, true, cx);
+        } else {
+            audio.seek(Duration::from_secs_f64(target));
+        }
+    }
+
+    fn prefetch_next(&mut self, cx: &mut Context<Self>) {
+        let Some(next) = self.neighbor(1, false) else { return };
+        self.load_segments(&next, cx);
+        let Some(playlist) = self.now.as_ref().and_then(|n| self.library.playlist(&n.playlist_id)) else { return };
+        if self.local_file(playlist, &next).is_none() {
+            let dir = storage::playlist_dir(&self.music_root(), playlist);
+            self.ensure_download(dir, &next);
         }
     }
 
     /// Queue every track of the playlist that isn't on disk yet.
     fn download_all(&mut self, playlist_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(playlist) = self.library.playlist(playlist_id).cloned() else { return };
-        let mut queued = 0;
-        for t in &playlist.tracks {
-            let already = self.download_queue.iter().any(|(_, id)| *id == t.id);
-            if !already && self.local_file(&playlist, t).is_none() {
-                self.download_queue.push_back((playlist.id.clone(), t.id.clone()));
-                queued += 1;
-            }
-        }
+        let Some(playlist) = self.library.playlist(playlist_id) else { return };
+        let already: std::collections::HashSet<&str> = self.download_queue.iter().map(|(_, id)| id.as_str()).collect();
+        // Each folder is listed once for the whole playlist, not once per track.
+        let mut index = storage::FileIndex::cached();
+        let missing: Vec<String> = playlist
+            .tracks
+            .iter()
+            .filter(|t| !already.contains(t.id.as_str()) && self.local_file_with(&mut index, playlist, t).is_none())
+            .map(|t| t.id.clone())
+            .collect();
+        let dir = storage::playlist_dir(&self.music_root(), playlist);
+        let queued = missing.len();
+        self.download_queue.extend(missing.into_iter().map(|tid| (playlist_id.to_string(), tid)));
+        self.on_disk.clear(); // the lookups may have restored or copied files
         if queued > 0 {
-            self.batches.entry(playlist.id.clone()).or_default().total += queued;
+            self.batches.entry(playlist_id.to_string()).or_default().total += queued;
         }
         let msg = if queued == 0 {
             "All tracks are already downloaded".to_string()
         } else {
-            format!("Downloading {queued} tracks to {}", storage::playlist_dir(&self.music_root(), &playlist).display())
+            format!("Downloading {queued} tracks to {}", dir.display())
         };
         window.push_notification(Notification::info(msg), cx);
         cx.notify();
@@ -706,18 +1061,18 @@ impl LocalPlaylist {
         const PARALLEL: usize = 2;
         while self.downloads.len() < PARALLEL {
             let Some((pid, tid)) = self.download_queue.pop_front() else { break };
-            let track = self.library.playlist(&pid).and_then(|p| p.tracks.iter().find(|t| t.id == tid).cloned());
-            let Some(playlist) = self.library.playlist(&pid).cloned() else { continue };
-            let Some(track) = track else {
+            let Some(playlist) = self.library.playlist(&pid) else { continue };
+            let Some(track) = playlist.tracks.iter().find(|t| t.id == tid).cloned() else {
                 // Removed from the playlist meanwhile.
                 if let Some(b) = self.batches.get_mut(&pid) {
                     b.total = b.total.saturating_sub(1);
                 }
                 continue;
             };
-            if self.local_file(&playlist, &track).is_none() {
-                self.ensure_download(&playlist, &track);
-                let key = storage::playlist_dir(&self.music_root(), &playlist).join(track.file_key());
+            if self.local_file(playlist, &track).is_none() {
+                let dir = storage::playlist_dir(&self.music_root(), playlist);
+                let key = dir.join(track.file_key());
+                self.ensure_download(dir, &track);
                 self.batches.entry(pid).or_default().active.insert(key);
             } else if let Some(b) = self.batches.get_mut(&pid) {
                 b.done += 1;
@@ -750,8 +1105,8 @@ impl LocalPlaylist {
 
     /// File stems in a playlist folder (cached; cleared when files change).
     fn disk_keys(&mut self, dir: &std::path::Path) -> &std::collections::HashSet<String> {
-        self.on_disk.entry(dir.to_path_buf()).or_insert_with(|| {
-            std::fs::read_dir(dir)
+        if !self.on_disk.contains_key(dir) {
+            let keys = std::fs::read_dir(dir)
                 .map(|it| {
                     it.flatten()
                         .filter_map(|e| {
@@ -763,8 +1118,38 @@ impl LocalPlaylist {
                         })
                         .collect()
                 })
-                .unwrap_or_default()
-        })
+                .unwrap_or_default();
+            self.on_disk.insert(dir.to_path_buf(), keys);
+        }
+        &self.on_disk[dir]
+    }
+
+    /// Indices into the selected playlist's tracks of the rows a search for
+    /// `query` shows, or `None` without a search (every row). Cached: the list
+    /// is drawn several times a second, and matching lowercases every track.
+    fn filtered_rows(&mut self, query: &str) -> Option<Rc<Vec<usize>>> {
+        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if terms.is_empty() {
+            return None;
+        }
+        let pid = self.selected.as_deref()?;
+        if let Some(c) = &self.filter_cache
+            && c.playlist_id == pid
+            && c.query == query
+            && c.library_rev == self.library_rev
+        {
+            return Some(c.rows.clone());
+        }
+        let p = self.library.playlist(pid)?;
+        let rows: Rc<Vec<usize>> =
+            Rc::new(p.tracks.iter().enumerate().filter(|(_, t)| t.matches(&terms)).map(|(ix, _)| ix).collect());
+        self.filter_cache = Some(FilterCache {
+            playlist_id: pid.to_string(),
+            query: query.to_string(),
+            library_rev: self.library_rev,
+            rows: rows.clone(),
+        });
+        Some(rows)
     }
 
     /// Rename a playlist's folder to follow its name (debounced, skipped while downloading into it).
@@ -773,18 +1158,19 @@ impl LocalPlaylist {
         if crate::now_ms() - at < 1200.0 {
             return;
         }
-        let Some(p) = self.library.playlist(&id).cloned() else {
+        let root = self.music_root();
+        let Some(p) = self.library.playlist(&id) else {
             self.pending_folder_rename = None;
             return;
         };
-        let root = self.music_root();
-        let old_dir = storage::playlist_dir(&root, &p);
+        let old_dir = storage::playlist_dir(&root, p);
         if self.downloads.keys().any(|k| k.starts_with(&old_dir)) {
             return; // retry when downloads into it are done
         }
-        self.pending_folder_rename = None;
         let folder = storage::unique_folder(&self.library, &id, &p.name);
-        if p.folder.as_deref() == Some(folder.as_str()) {
+        let unchanged = p.folder.as_deref() == Some(folder.as_str());
+        self.pending_folder_rename = None;
+        if unchanged {
             return;
         }
         let new_dir = root.join(&folder);
@@ -843,26 +1229,20 @@ impl LocalPlaylist {
         cx.notify();
     }
 
-    fn order(&self) -> Vec<String> {
-        let Some(now) = &self.now else { return Vec::new() };
-        let Some(p) = self.library.playlist(&now.playlist_id) else { return Vec::new() };
-        if self.library.settings.shuffle {
-            // Keep shuffle order, dropping removed tracks and appending new ones.
-            let mut order: Vec<String> = self
-                .shuffle_order
-                .iter()
-                .filter(|id| p.tracks.iter().any(|t| &t.id == *id))
-                .cloned()
-                .collect();
-            for t in &p.tracks {
-                if !order.contains(&t.id) {
-                    order.push(t.id.clone());
-                }
-            }
-            order
-        } else {
-            p.tracks.iter().map(|t| t.id.clone()).collect()
+    /// Play order of playlist `p` (track entry ids).
+    fn order<'a>(&'a self, p: &'a Playlist) -> Vec<&'a str> {
+        if !self.library.settings.shuffle {
+            return p.tracks.iter().map(|t| t.id.as_str()).collect();
         }
+        // Keep shuffle order, dropping removed tracks and appending new ones.
+        let present: std::collections::HashSet<&str> = p.tracks.iter().map(|t| t.id.as_str()).collect();
+        let mut order: Vec<&str> =
+            self.shuffle_order.iter().map(String::as_str).filter(|id| present.contains(id)).collect();
+        if order.len() < p.tracks.len() {
+            let shuffled: std::collections::HashSet<&str> = order.iter().copied().collect();
+            order.extend(p.tracks.iter().map(|t| t.id.as_str()).filter(|id| !shuffled.contains(id)));
+        }
+        order
     }
 
     fn reshuffle(&mut self, first: &str) {
@@ -877,7 +1257,8 @@ impl LocalPlaylist {
     /// Track `delta` steps away from the current one in play order.
     fn neighbor(&self, delta: isize, wrap: bool) -> Option<Track> {
         let now = self.now.as_ref()?;
-        let order = self.order();
+        let p = self.library.playlist(&now.playlist_id)?;
+        let order = self.order(p);
         let pos = order.iter().position(|id| *id == now.track.id)? as isize;
         let mut next = pos + delta;
         let len = order.len() as isize;
@@ -887,8 +1268,8 @@ impl LocalPlaylist {
             }
             next = next.rem_euclid(len);
         }
-        let id = &order[next as usize];
-        self.library.playlist(&now.playlist_id)?.tracks.iter().find(|t| &t.id == id).cloned()
+        let id = order[next as usize];
+        p.tracks.iter().find(|t| t.id == id).cloned()
     }
 
     fn skip(&mut self, delta: isize, auto: bool, cx: &mut Context<Self>) {
@@ -933,6 +1314,15 @@ impl LocalPlaylist {
         for note in self.pending_notes.drain(..) {
             window.push_notification(note, cx);
         }
+        // Free replaced covers' textures (each up to 640² px, 1.6 MB).
+        if !self.stale_covers.is_empty() {
+            let now = crate::now_ms();
+            let (old, keep): (Vec<_>, Vec<_>) = self.stale_covers.drain(..).partition(|(_, at)| now - at > 500.0);
+            self.stale_covers = keep;
+            for (img, _) in old {
+                cx.drop_image(img, Some(window));
+            }
+        }
         if self.installing.is_some() {
             cx.notify();
         }
@@ -940,6 +1330,10 @@ impl LocalPlaylist {
         // Collect finished downloads.
         let finished: Vec<(PathBuf, Result<PathBuf, String>)> =
             self.downloads.iter().filter_map(|(k, d)| d.result().map(|r| (k.clone(), r))).collect();
+        if !finished.is_empty() {
+            // Remuxing and tagging the file allocated a lot on its thread.
+            crate::mem::trim();
+        }
         for (key, result) in finished {
             self.downloads.remove(&key);
             if let Some(dir) = key.parent() {
@@ -983,10 +1377,12 @@ impl LocalPlaylist {
         }
         self.pump_queue();
         self.apply_folder_rename();
+        self.save_if_due();
 
         // Player events.
         if let Some(err) = self.audio.as_mut().and_then(|a| a.poll()) {
             self.state = PlayState::Idle;
+            cx.notify();
             let title = self.now.as_ref().map(|n| n.track.title.clone()).unwrap_or_default();
             window.push_notification(
                 Notification::error(format!("Couldn't play \"{title}\": {err}")).autohide(false),
@@ -997,17 +1393,67 @@ impl LocalPlaylist {
             if self.audio.as_ref().is_some_and(|a| a.finished()) {
                 self.skip(1, true, cx);
             } else if self.seeking.is_none() {
+                self.skip_segments(cx);
                 let pos = self.audio.as_ref().map(|a| a.position()).unwrap_or_default();
                 if let Some(total) = self.total_duration().filter(|d| !d.is_zero()) {
                     let frac = (pos.as_secs_f32() / total.as_secs_f32()).clamp(0., 1.);
                     self.seek.update(cx, |s, cx| s.set_value(frac, window, cx));
                 }
             }
-            cx.notify();
+            // While a track just plays, only the clock moves: redraw the seek row
+            // alone. The whole window when something else shown changes, and
+            // while downloads run (their progress shows in the list).
+            let shown = (self.is_buffering(), self.audio.as_ref().is_some_and(|a| a.is_paused()));
+            if shown != self.last_shown || !self.downloads.is_empty() {
+                self.last_shown = shown;
+                cx.notify();
+            } else {
+                self.progress.update(cx, |_, cx| cx.notify());
+            }
         } else if !self.downloads.is_empty() {
             cx.notify();
         }
     }
+}
+
+/// Fetch a track's cover (cached on disk; off the UI thread on the desktop) and
+/// prepare it for display at up to `max_px` pixels, with its dominant colour
+/// if `accent`.
+async fn fetch_cover(
+    cx: &mut AsyncApp,
+    paths: Paths,
+    platform: Platform,
+    id: String,
+    size: crate::cover::Size,
+    max_px: u32,
+    accent: bool,
+) -> anyhow::Result<CoverImage> {
+    #[cfg(not(target_family = "wasm"))]
+    return cx
+        .background_spawn(async move {
+            crate::cover::get(&paths, platform, &id, size).and_then(|b| cover_image(&b, max_px, accent))
+        })
+        .await;
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (cx, paths);
+        crate::web::api::cover(platform, &id, size).await.and_then(|b| cover_image(&b, max_px, accent))
+    }
+}
+
+/// A decoded cover and its dominant (hue, saturation).
+type CoverImage = (Arc<RenderImage>, Option<(f32, f32)>);
+
+/// A cover ready for display (bars trimmed, square, decoded for GPUI) and, if
+/// `accent`, its dominant colour.
+fn cover_image(bytes: &[u8], max_px: u32, accent: bool) -> anyhow::Result<CoverImage> {
+    let mut img = crate::cover::square(bytes, max_px)?;
+    let accent = if accent { crate::cover::dominant_hue(&img) } else { None };
+    // GPUI wants BGRA.
+    for p in img.pixels_mut() {
+        p.0.swap(0, 2);
+    }
+    Ok((Arc::new(RenderImage::new(vec![image::Frame::new(img)])), accent))
 }
 
 /// Small xorshift shuffle; no need for cryptographic randomness.
@@ -1024,7 +1470,8 @@ fn shuffle<T>(v: &mut [T]) {
 // ------------------------------------------------------------------ rendering
 
 impl LocalPlaylist {
-    fn render_sidebar(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let branded_title_bar = Self::has_title_bar(window);
         let theme = cx.theme();
         let playlists = self.library.playlists.iter().map(|p| {
             let selected = self.selected.as_deref() == Some(&p.id);
@@ -1067,12 +1514,21 @@ impl LocalPlaylist {
                     .pt_3()
                     .pb_2()
                     .justify_between()
-                    .child(
+                    .child(if branded_title_bar {
+                        // The app name is in the title bar already.
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(theme.muted_foreground)
+                            .child("PLAYLISTS")
+                            .into_any_element()
+                    } else {
                         h_flex()
                             .gap_2()
                             .child(Icon::new(IconName::Disc3).text_color(theme.primary))
-                            .child(div().font_semibold().child("Local Playlist")),
-                    )
+                            .child(div().font_semibold().child("Local Playlist"))
+                            .into_any_element()
+                    })
                     .child(
                         Button::new("new-playlist")
                             .ghost()
@@ -1154,6 +1610,10 @@ impl LocalPlaylist {
 
     fn render_main(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let query = self.search_input.read(cx).value().to_string();
+        // Indices into `playlist.tracks` of the rows shown (`None` = all).
+        let visible = self.filtered_rows(&query);
+        self.list_rows = visible.clone();
         let Some(playlist) = self.selected_playlist() else {
             return v_flex()
                 .flex_1()
@@ -1175,29 +1635,51 @@ impl LocalPlaylist {
         };
         let count = playlist.tracks.len();
         let total: u32 = playlist.tracks.iter().filter_map(|t| t.duration_secs).sum();
+        let filtering = visible.is_some();
+        let shown = visible.as_ref().map_or(count, |v| v.len());
         let pid = playlist.id.clone();
         let playlist_id_for_dl = playlist.id.clone();
 
         let list = uniform_list(
             "tracks",
-            count,
+            shown,
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                 let theme = cx.theme().clone();
                 let Some(dir) = this.selected_playlist().map(|p| storage::playlist_dir(&this.music_root(), p)) else {
                     return Vec::new();
                 };
-                let on_disk = if crate::WEB { Default::default() } else { this.disk_keys(&dir).clone() };
                 let Some(p) = this.selected_playlist() else { return Vec::new() };
                 let now_id = this.now.as_ref().map(|n| n.track.id.clone());
                 let loading = this.is_buffering();
                 let paused = this.audio.as_ref().is_some_and(|a| a.is_paused());
-                range
-                    .filter_map(|ix| p.tracks.get(ix).map(|t| (ix, t.clone())))
-                    .map(|(ix, t)| {
+                let rows: Vec<(usize, Track)> = range
+                    .filter_map(|row| {
+                        let ix = match &visible {
+                            Some(v) => *v.get(row)?,
+                            None => row,
+                        };
+                        p.tracks.get(ix).map(|t| (ix, t.clone()))
+                    })
+                    .collect();
+                let playlist_id = p.id.clone();
+                // Each row's file target (`<dir>/<key>`) and whether it's on disk.
+                let keys: Vec<String> = rows.iter().map(|(_, t)| t.file_key()).collect();
+                let on_disk: Vec<bool> = if crate::WEB {
+                    vec![false; rows.len()]
+                } else {
+                    let keys_on_disk = this.disk_keys(&dir);
+                    keys.iter().map(|k| keys_on_disk.contains(k)).collect()
+                };
+                let row_thumbs: Vec<_> = rows.iter().map(|(_, t)| this.thumb(t, cx)).collect();
+                rows.into_iter()
+                    .zip(row_thumbs)
+                    .zip(keys.into_iter().zip(on_disk))
+                    .map(|(((ix, t), thumb), (key, downloaded))| {
                         let current = now_id.as_deref() == Some(&t.id);
-                        let (pid, tid) = (p.id.clone(), t.id.clone());
+                        let (pid, tid) = (playlist_id.clone(), t.id.clone());
                         let (tid_up, tid_down, tid_rm) = (t.id.clone(), t.id.clone(), t.id.clone());
-                        let progress = this.downloads.get(&dir.join(t.file_key())).map(|d| d.progress());
+                        let target = dir.join(&key);
+                        let progress = this.downloads.get(&target).map(|d| d.progress());
                         h_flex()
                             .id(ix)
                             .w_full()
@@ -1219,6 +1701,7 @@ impl LocalPlaylist {
                                     },
                                 ),
                             )
+                            .child(thumbs::cover_tile(thumb, px(36.), &theme))
                             .child(
                                 v_flex()
                                     .flex_1()
@@ -1246,7 +1729,7 @@ impl LocalPlaylist {
                                             .text_color(theme.muted_foreground)
                                             .child(format!("{:.0}%", p * 100.))
                                             .into_any_element()
-                                    } else if let Some(err) = this.download_errors.get(&dir.join(t.file_key())).cloned() {
+                                    } else if let Some(err) = this.download_errors.get(&target).cloned() {
                                         div()
                                             .id(("dl-err", ix))
                                             .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
@@ -1255,7 +1738,7 @@ impl LocalPlaylist {
                                                     .build(window, cx)
                                             })
                                             .into_any_element()
-                                    } else if on_disk.contains(&t.file_key()) {
+                                    } else if downloaded {
                                         div()
                                             .id(("dl-ok", ix))
                                             .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
@@ -1282,26 +1765,30 @@ impl LocalPlaylist {
                             .child(
                                 h_flex()
                                     .gap_0p5()
-                                    .child(
-                                        Button::new(("up", ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::ArrowUp)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.move_track(&tid_up, -1, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(("down", ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::ArrowDown)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.move_track(&tid_down, 1, cx);
-                                            })),
-                                    )
+                                    .when(!filtering, |d| {
+                                        d.child(
+                                            Button::new(("up", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::ArrowUp)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.move_track(&tid_up, -1, cx);
+                                                })),
+                                        )
+                                    })
+                                    .when(!filtering, |d| {
+                                        d.child(
+                                            Button::new(("down", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::ArrowDown)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.move_track(&tid_down, 1, cx);
+                                                })),
+                                        )
+                                    })
                                     .child(
                                         Button::new(("rm", ix))
                                             .ghost()
@@ -1371,14 +1858,30 @@ impl LocalPlaylist {
                             ),
                     )
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.muted_foreground)
-                            .child(format!(
-                                "{count} track{}{}",
-                                if count == 1 { "" } else { "s" },
-                                if total > 0 { format!(" · {}", format_duration(total)) } else { String::new() }
-                            )),
+                        h_flex()
+                            .gap_3()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .when(filtering, |d| d.child(format!("{shown} of ")))
+                                    .child(format!(
+                                        "{count} track{}{}",
+                                        if count == 1 { "" } else { "s" },
+                                        if total > 0 { format!(" · {}", format_duration(total)) } else { String::new() }
+                                    )),
+                            )
+                            .when(count > 0, |d| {
+                                d.child(
+                                    div().w(px(260.)).flex_shrink(1.).child(
+                                        Input::new(&self.search_input)
+                                            .small()
+                                            .prefix(Icon::new(IconName::Search).small().text_color(theme.muted_foreground))
+                                            .cleanable(true),
+                                    ),
+                                )
+                            }),
                     )
                     .child(
                         h_flex()
@@ -1416,7 +1919,17 @@ impl LocalPlaylist {
                                 .child("This playlist is empty. Paste a link above to add tracks."),
                         )
                     })
-                    .when(count > 0, |d| {
+                    .when(count > 0 && shown == 0, |d| {
+                        d.child(
+                            v_flex()
+                                .size_full()
+                                .items_center()
+                                .justify_center()
+                                .text_color(theme.muted_foreground)
+                                .child("No tracks match your search."),
+                        )
+                    })
+                    .when(shown > 0, |d| {
                         d.child(list).child(
                             div()
                                 .absolute()
@@ -1429,6 +1942,83 @@ impl LocalPlaylist {
                     }),
             )
             .into_any_element()
+    }
+
+    /// The visualizer page: what's playing, over the visualizer.
+    fn render_visualizer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        use visualizer::Style;
+        let theme = cx.theme().clone();
+        let style = self.visualizer.read(cx).style;
+        let style_button = |id: &'static str, icon: IconName, tip: &'static str, s: Style| {
+            Button::new(id)
+                .ghost()
+                .small()
+                .icon(icon)
+                .toggled(style == s)
+                .tooltip(tip)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.visualizer.update(cx, |v, cx| {
+                        v.style = s;
+                        cx.notify();
+                    });
+                }))
+        };
+        // The visualizer fills the page, with the title over it.
+        div()
+            .size_full()
+            .relative()
+            .child(div().absolute().inset_0().child(self.visualizer.clone()))
+            .child(
+                h_flex()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .p_6()
+                    .gap_4()
+                    .child(
+                        match &self.now {
+                            Some(n) => v_flex()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_xl()
+                                        .font_semibold()
+                                        .truncate()
+                                        .child(n.track.title.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_color(theme.muted_foreground)
+                                        .child(n.track.artist.clone()),
+                                ),
+                            None => v_flex().child(
+                                div()
+                                    .text_color(theme.muted_foreground)
+                                    .child("Nothing playing"),
+                            ),
+                        }
+                        .flex_1(),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap_1()
+                            .child(style_button(
+                                "vis-circle",
+                                IconName::Disc3,
+                                "Circle",
+                                Style::Circle,
+                            ))
+                            .child(style_button(
+                                "vis-bars",
+                                IconName::ChartColumn,
+                                "Bars",
+                                Style::Bars,
+                            )),
+                    ),
+            )
     }
 
     /// "Download all" button, or batch progress with a stop button while running.
@@ -1462,12 +2052,20 @@ impl LocalPlaylist {
                 )
                 .into_any_element();
         }
-        let target = self.library.playlist(playlist_id).map(|p| {
-            (storage::playlist_dir(&self.music_root(), p), p.tracks.iter().map(|t| t.file_key()).collect::<Vec<_>>())
-        });
-        let all_on_disk = target.is_some_and(|(dir, keys)| {
-            let on_disk = self.disk_keys(&dir);
-            !keys.is_empty() && keys.iter().all(|k| on_disk.contains(k))
+        // Drawn several times a second: checked without allocating per track,
+        // stopping at the first missing one.
+        let dir = self.library.playlist(playlist_id).map(|p| storage::playlist_dir(&self.music_root(), p));
+        let all_on_disk = dir.is_some_and(|dir| {
+            self.disk_keys(&dir);
+            let (Some(on_disk), Some(p)) = (self.on_disk.get(&dir), self.library.playlist(playlist_id)) else {
+                return false;
+            };
+            let mut key = String::new();
+            !p.tracks.is_empty()
+                && p.tracks.iter().all(|t| {
+                    t.write_file_key(&mut key);
+                    on_disk.contains(&key)
+                })
         });
         Button::new("download-all")
             .ghost()
@@ -1483,20 +2081,16 @@ impl LocalPlaylist {
             .into_any_element()
     }
 
-    fn render_player(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        // The bar touches the window's bottom corners, which may be rounded.
+        let radii = gpui_kit::component::window_corner_radii(window, cx);
         let settings = self.library.settings.clone();
         let playing = matches!(self.state, PlayState::Playing)
             && self.audio.as_ref().is_some_and(|a| !a.is_paused());
         let buffering = self.is_buffering();
         let download = self.current_download();
         let loading = buffering.then(|| download.unwrap_or(0.));
-        let total = self.total_duration();
-        let pos = match (self.seeking, total) {
-            (Some(frac), Some(t)) => t.mul_f32(frac),
-            _ => self.audio.as_ref().map(|a| a.position()).unwrap_or_default(),
-        };
-        let fmt = |d: Duration| format_duration(d.as_secs() as u32);
 
         let info = match &self.now {
             Some(n) => v_flex()
@@ -1514,6 +2108,14 @@ impl LocalPlaylist {
                 ),
             None => v_flex().child(div().text_color(theme.muted_foreground).child("Nothing playing")),
         };
+        // The full cover once loaded; the list thumbnail until then.
+        let now_track = self.now.as_ref().map(|n| n.track.clone());
+        let cover = self.now_cover.clone().or_else(|| now_track.and_then(|t| self.thumb(&t, cx)));
+        let info = h_flex()
+            .gap_3()
+            .min_w_0()
+            .when(self.now.is_some(), |d| d.child(thumbs::cover_tile(cover, px(52.), &theme)))
+            .child(info.min_w_0().flex_1());
 
         h_flex()
             .h(px(84.))
@@ -1523,6 +2125,8 @@ impl LocalPlaylist {
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.sidebar)
+            .rounded_bl(radii.bottom_left)
+            .rounded_br(radii.bottom_right)
             .child(div().w(px(260.)).flex_none().child(info))
             .child(
                 v_flex()
@@ -1591,27 +2195,31 @@ impl LocalPlaylist {
                                     })),
                             ),
                     )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .max_w(px(640.))
-                            .gap_2()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(div().w(px(44.)).text_right().child(fmt(pos)))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(Slider::new(&self.seek).disabled(!matches!(self.state, PlayState::Playing))),
-                            )
-                            .child(div().w(px(44.)).child(total.map(fmt).unwrap_or_else(|| "--:--".into()))),
-                    ),
+                    // Its own view, so the clock ticking redraws just this row.
+                    .child(div().w_full().max_w(px(640.)).child(self.progress.clone())),
             )
             .child(
                 h_flex()
-                    .w(px(180.))
+                    .w(px(212.))
                     .flex_none()
                     .gap_2()
+                    .child(
+                        Button::new("visualizer")
+                            .ghost()
+                            .small()
+                            .icon(IconName::AudioLines)
+                            .toggled(self.show_visualizer && self.view == View::Playlist)
+                            .tooltip("Visualizer")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.view == View::Playlist {
+                                    this.show_visualizer = !this.show_visualizer;
+                                } else {
+                                    this.view = View::Playlist;
+                                    this.show_visualizer = true;
+                                }
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Icon::new(if settings.volume <= 0.001 { IconName::VolumeX } else { IconName::Volume2 })
                             .small()
@@ -1651,10 +2259,18 @@ impl Render for LocalPlaylist {
             return self.render_server_login(cx).into_any_element();
         }
         let theme = cx.theme();
+        let radii = gpui_kit::component::window_corner_radii(window, cx);
         v_flex()
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .rounded_tl(radii.top_left)
+            .rounded_tr(radii.top_right)
+            .rounded_bl(radii.bottom_left)
+            .rounded_br(radii.bottom_right)
+            .when(Self::has_title_bar(window), |d| {
+                d.child(self.render_title_bar(cx))
+            })
             .child(
                 h_flex()
                     .flex_1()
@@ -1667,6 +2283,9 @@ impl Render for LocalPlaylist {
                             .h_full()
                             .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
                             .child(div().flex_1().min_h_0().child(match self.view {
+                                View::Playlist if self.show_visualizer => {
+                                    self.render_visualizer(cx).into_any_element()
+                                }
                                 View::Playlist => self.render_main(window, cx).into_any_element(),
                                 View::Settings => self.render_settings(window, cx).into_any_element(),
                             })),
@@ -1678,6 +2297,56 @@ impl Render for LocalPlaylist {
 }
 
 impl LocalPlaylist {
+    /// Whether the app draws its own title bar: always on the desktop, except on
+    /// Linux when the window manager kept server-side decorations (X11 without a
+    /// compositor, some tiling compositors) and so already draws one.
+    fn has_title_bar(window: &Window) -> bool {
+        if crate::WEB {
+            return false;
+        }
+        !cfg!(target_os = "linux")
+            || matches!(window.window_decorations(), Decorations::Client { .. })
+    }
+
+    /// Custom title bar: app name, the playing track, and window controls.
+    fn render_title_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let playing = self.now.as_ref().map(|n| {
+            if n.track.artist.is_empty() {
+                n.track.title.clone()
+            } else {
+                format!("{} — {}", n.track.title, n.track.artist)
+            }
+        });
+        gpui_kit::component::TitleBar::new().child(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .gap_3()
+                .pr_3()
+                .text_sm()
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_2()
+                        .child(Icon::new(IconName::Disc3).small().text_color(theme.primary))
+                        .child(div().font_semibold().child("Local Playlist")),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_center()
+                        .text_color(theme.muted_foreground)
+                        .children(playing),
+                )
+                // Balances the name on the left so the track title stays centred.
+                .child(div().flex_none().w(px(120.))),
+        )
+    }
+
     /// Web: the server's access password prompt.
     fn render_server_login(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();

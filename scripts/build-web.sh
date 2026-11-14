@@ -18,7 +18,7 @@ wasm-bindgen --target web --no-typescript --out-dir web/dist \
 if command -v wasm-opt >/dev/null; then
     # Features match what rustc enables by default for wasm32-unknown-unknown,
     # plus threads: GPUI's scheduler contains (unused) atomics.
-    wasm-opt -Os --strip-debug --strip-producers \
+    wasm-opt -Oz --strip-debug --strip-producers \
         --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
         --enable-mutable-globals --enable-reference-types --enable-multivalue --enable-threads \
         -o web/dist/local_playlist_bg.wasm web/dist/local_playlist_bg.wasm

@@ -44,21 +44,6 @@ fn root_path() -> String {
     "/".into()
 }
 
-#[cfg(feature = "desktop")]
-impl StoredCookie {
-    pub fn from_cookie(c: &wry::cookie::Cookie<'_>) -> Self {
-        Self {
-            name: c.name().to_string(),
-            value: c.value().to_string(),
-            domain: c.domain().unwrap_or_default().to_string(),
-            path: c.path().unwrap_or("/").to_string(),
-            secure: c.secure().unwrap_or(false),
-            http_only: c.http_only().unwrap_or(false),
-            expires: c.expires_datetime().map(|t| t.unix_timestamp()),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Credentials {
     #[serde(default)]

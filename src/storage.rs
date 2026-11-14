@@ -8,6 +8,7 @@
 //! * Temp downloads go to `<playlist folder>/.downloading/<key>/` (same
 //!   filesystem, so finishing a download is just a rename).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -94,6 +95,57 @@ pub fn find_file(dir: &Path, key: &str) -> Option<PathBuf> {
     })
 }
 
+/// How [`materialize_with`] finds files: directly ([`find_file`], for one
+/// track), or from each folder's listing read once (for many tracks in a row,
+/// e.g. "Download all", which would otherwise list every folder per track).
+pub struct FileIndex {
+    /// Folder → audio files by key; `None` = look up directly.
+    dirs: Option<HashMap<PathBuf, HashMap<String, PathBuf>>>,
+}
+
+impl FileIndex {
+    pub fn direct() -> Self {
+        Self { dirs: None }
+    }
+
+    pub fn cached() -> Self {
+        Self { dirs: Some(HashMap::new()) }
+    }
+
+    /// Like [`find_file`].
+    pub fn find(&mut self, dir: &Path, key: &str) -> Option<PathBuf> {
+        let Some(dirs) = &mut self.dirs else { return find_file(dir, key) };
+        if !dirs.contains_key(dir) {
+            let mut files = HashMap::new();
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = entry.path();
+                let Some((key, _)) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split_once('.')) else {
+                    continue;
+                };
+                if p.extension().and_then(|e| e.to_str()).is_some_and(|e| AUDIO_EXTS.contains(&e)) && p.is_file() {
+                    files.entry(key.to_string()).or_insert(p);
+                }
+            }
+            dirs.insert(dir.to_path_buf(), files);
+        }
+        dirs.get(dir)?.get(key).cloned()
+    }
+
+    /// Record that `path` (`<dir>/<key>.<ext>`) now exists, or no longer does.
+    fn update(&mut self, dir: &Path, key: &str, path: Option<PathBuf>) {
+        if let Some(files) = self.dirs.as_mut().and_then(|d| d.get_mut(dir)) {
+            match path {
+                Some(p) => {
+                    files.insert(key.to_string(), p);
+                }
+                None => {
+                    files.remove(key);
+                }
+            }
+        }
+    }
+}
+
 /// Key used by the old flat cache (`yt-<id>` / `sc-<id>`).
 fn legacy_key(track: &Track) -> String {
     let short = match track.platform {
@@ -107,13 +159,24 @@ fn legacy_key(track: &Track) -> String {
 /// the removed cache, another playlist folder or the legacy cache. Returns the
 /// path, or `None` if it has to be downloaded.
 pub fn materialize(paths: &Paths, library: &Library, playlist: &Playlist, track: &Track) -> Option<PathBuf> {
+    materialize_with(&mut FileIndex::direct(), paths, library, playlist, track)
+}
+
+/// [`materialize`], finding files through `index`.
+pub fn materialize_with(
+    index: &mut FileIndex,
+    paths: &Paths,
+    library: &Library,
+    playlist: &Playlist,
+    track: &Track,
+) -> Option<PathBuf> {
     let root = music_root(&library.settings);
     let dir = playlist_dir(&root, playlist);
     let key = track.file_key();
-    if let Some(p) = find_file(&dir, &key) {
+    if let Some(p) = index.find(&dir, &key) {
         return Some(p);
     }
-    let place = |src: &Path, keep_source: bool| -> Option<PathBuf> {
+    let place = |index: &mut FileIndex, src: &Path, keep_source: bool| -> Option<PathBuf> {
         std::fs::create_dir_all(&dir).ok()?;
         let dest = dir.join(src.file_name()?);
         let ok = if keep_source {
@@ -121,24 +184,31 @@ pub fn materialize(paths: &Paths, library: &Library, playlist: &Playlist, track:
         } else {
             move_file(src, &dest).is_ok()
         };
+        index.update(&dir, &key, ok.then(|| dest.clone()));
         ok.then_some(dest)
     };
     // Previously removed from some playlist.
-    if let Some(p) = find_file(&removed_dir(paths), &key) {
-        return place(&p, false);
+    let removed = removed_dir(paths);
+    if let Some(p) = index.find(&removed, &key) {
+        index.update(&removed, &key, None);
+        return place(index, &p, false);
     }
     // Present in another playlist's folder.
     for other in library.playlists.iter().filter(|p| p.id != playlist.id) {
-        if let Some(p) = find_file(&playlist_dir(&root, other), &key) {
-            return place(&p, true);
+        if let Some(p) = index.find(&playlist_dir(&root, other), &key) {
+            return place(index, &p, true);
         }
     }
     // Old flat cache from earlier versions.
-    if let Some(p) = find_file(&paths.cache.join("audio"), &legacy_key(track)) {
+    let legacy = paths.cache.join("audio");
+    if let Some(p) = index.find(&legacy, &legacy_key(track)) {
+        index.update(&legacy, &legacy_key(track), None);
         let dest_name = format!("{key}.{}", p.extension()?.to_str()?);
         std::fs::create_dir_all(&dir).ok()?;
         let dest = dir.join(dest_name);
-        return move_file(&p, &dest).ok().map(|_| dest);
+        let moved = move_file(&p, &dest).is_ok();
+        index.update(&dir, &key, moved.then(|| dest.clone()));
+        return moved.then_some(dest);
     }
     None
 }

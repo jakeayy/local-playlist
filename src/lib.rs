@@ -9,9 +9,16 @@ compile_error!("on native targets the `ui` feature needs `desktop`");
 
 #[cfg(feature = "ui")]
 pub mod app;
+pub mod cover;
 pub mod download;
+pub mod mem;
 pub mod model;
+#[cfg(feature = "desktop")]
+pub mod remux;
 pub mod sources;
+#[cfg(feature = "ui")]
+pub mod spectrum;
+pub mod sponsorblock;
 pub mod storage;
 #[cfg(feature = "ui")]
 pub mod theme;
@@ -64,7 +71,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     AppIcons,
     [
-        ArrowDown, ArrowUp, Monitor, Moon, Sun, CircleAlert, CircleCheck, CircleQuestionMark, CircleStop, Disc3,
+        ArrowDown, ArrowUp, AudioLines, ChartColumn, Monitor, Moon, Sun, CircleAlert, CircleCheck, CircleQuestionMark, CircleStop, Disc3,
         Download, FolderOpen, HardDriveDownload, Import, Link, ListMusic, LoaderCircle, LogIn, LogOut, Pause,
         Play, Plus, RefreshCw, Repeat, Repeat1, Server, Settings, Shuffle, SkipBack, SkipForward, Trash, Volume2,
         VolumeX, X
@@ -96,12 +103,26 @@ impl AssetSource for AppAssets {
 /// Window content shared by desktop and web.
 #[cfg(feature = "ui")]
 pub fn window_options(cx: &App) -> WindowOptions {
-    WindowOptions {
+    // Desktop draws its own title bar (`app::LocalPlaylist::render_title_bar`).
+    #[cfg(feature = "desktop")]
+    let base = WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some("Local Playlist".into()),
+            ..gpui_kit::component::TitleBar::title_bar_options()
+        }),
+        window_decorations: Some(WindowDecorations::Client),
+        ..gpui_kit::component::TitleBar::window_options()
+    };
+    #[cfg(not(feature = "desktop"))]
+    let base = WindowOptions {
         titlebar: Some(TitlebarOptions { title: Some("Local Playlist".into()), ..Default::default() }),
+        ..Default::default()
+    };
+    WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1120.), px(740.)), cx)),
         window_min_size: Some(size(px(820.), px(520.))),
         app_id: Some("local-playlist".into()),
-        ..Default::default()
+        ..base
     }
 }
 

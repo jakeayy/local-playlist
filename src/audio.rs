@@ -14,7 +14,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,8 +26,9 @@ use crate::download::{DlState, Download};
 
 /// Samples per chunk sent from the decoder thread.
 const CHUNK: usize = 4096;
-/// Chunks the channel can hold (~12 s of 44.1 kHz stereo).
-const QUEUE: usize = 256;
+/// Chunks the channel can hold (~6 s of 44.1 kHz stereo, 2 MB; comfortably
+/// more than [`PREBUFFER_SECS`]).
+const QUEUE: usize = 128;
 /// Seconds of audio to buffer before starting a stream / after an underrun.
 pub const PREBUFFER_SECS: f32 = 3.0;
 const REBUFFER_SECS: f32 = 1.5;
@@ -78,6 +79,54 @@ impl Shared {
     }
 }
 
+// --------------------------------------------------------------------- tap
+
+/// Mono samples kept for visualization (~93 ms at 44.1 kHz).
+pub const TAP_LEN: usize = 4096;
+
+/// The most recent audio sent to the output device (mono, before volume), for
+/// visualizations. Written lock-free by the audio thread.
+#[derive(Clone)]
+pub struct Tap(Arc<TapInner>);
+
+struct TapInner {
+    /// Ring buffer of `f32` bits.
+    buf: Box<[AtomicU32]>,
+    /// Samples written so far; `written % TAP_LEN` is the next write slot.
+    written: AtomicU64,
+    rate: AtomicU32,
+}
+
+impl Tap {
+    fn new() -> Self {
+        Self(Arc::new(TapInner {
+            buf: (0..TAP_LEN).map(|_| AtomicU32::new(0)).collect(),
+            written: AtomicU64::new(0),
+            rate: AtomicU32::new(44_100),
+        }))
+    }
+
+    fn push(&self, sample: f32) {
+        let n = self.0.written.load(Ordering::Relaxed);
+        self.0.buf[n as usize % TAP_LEN].store(sample.to_bits(), Ordering::Relaxed);
+        self.0.written.store(n + 1, Ordering::Release);
+    }
+
+    /// Copy the latest `out.len()` (at most [`TAP_LEN`]) samples into `out`,
+    /// oldest first. Returns the sample rate and the number of samples written
+    /// so far, which stops advancing while nothing plays.
+    pub fn latest(&self, out: &mut [f32]) -> (u32, u64) {
+        let end = self.0.written.load(Ordering::Acquire);
+        let len = out.len().min(TAP_LEN);
+        for (i, o) in out[..len].iter_mut().enumerate() {
+            // Slots before the first write hold zeros.
+            let n = (end + TAP_LEN as u64 - len as u64 + i as u64) as usize % TAP_LEN;
+            *o = f32::from_bits(self.0.buf[n].load(Ordering::Relaxed));
+        }
+        (self.0.rate.load(Ordering::Relaxed), end)
+    }
+}
+
 struct Stream {
     shared: Arc<Shared>,
     ctrl: mpsc::Sender<Cmd>,
@@ -91,6 +140,7 @@ pub struct Audio {
     _sink: MixerDeviceSink,
     player: Player,
     stream: Option<Stream>,
+    tap: Tap,
 }
 
 impl Audio {
@@ -100,7 +150,7 @@ impl Audio {
         sink.log_on_drop(false);
         let player = Player::connect_new(sink.mixer());
         player.set_volume(volume);
-        Ok(Self { _sink: sink, player, stream: None })
+        Ok(Self { _sink: sink, player, stream: None, tap: Tap::new() })
     }
 
     /// Start playing `input`, replacing whatever was playing. Opening happens
@@ -132,6 +182,7 @@ impl Audio {
                     stream.ready = None;
                     stream.shared.rate.store(rate as u64, Ordering::Relaxed);
                     stream.shared.channels.store(channels as u64, Ordering::Relaxed);
+                    self.tap.0.rate.store(rate, Ordering::Relaxed);
                     let source = OutputSource {
                         rx: stream.rx.take().unwrap(),
                         shared: stream.shared.clone(),
@@ -142,6 +193,9 @@ impl Audio {
                         silence: false,
                         prebuffering: true,
                         threshold: None,
+                        tap: self.tap.clone(),
+                        mix: 0.0,
+                        mixed: 0,
                     };
                     self.player.append(source);
                 }
@@ -218,6 +272,11 @@ impl Audio {
         self.player.set_volume(volume);
     }
 
+    /// What is being played, for visualizations.
+    pub fn tap(&self) -> Tap {
+        self.tap.clone()
+    }
+
     /// True once a loaded track has played to the end.
     pub fn finished(&self) -> bool {
         self.stream.as_ref().is_some_and(|s| s.ready.is_none()) && self.player.empty()
@@ -237,6 +296,10 @@ struct OutputSource {
     silence: bool,
     prebuffering: bool,
     threshold: Option<f32>,
+    tap: Tap,
+    /// Running sum / count of the current frame's channels (downmix for `tap`).
+    mix: f32,
+    mixed: u16,
 }
 
 impl OutputSource {
@@ -266,6 +329,13 @@ impl Iterator for OutputSource {
             if self.idx < self.cur.len() {
                 let s = self.cur[self.idx];
                 self.idx += 1;
+                self.mix += s;
+                self.mixed += 1;
+                if self.mixed >= self.channels.get() {
+                    self.tap.push(self.mix / self.mixed as f32);
+                    self.mix = 0.0;
+                    self.mixed = 0;
+                }
                 return Some(s);
             }
             let done = self.shared.decoder_done.load(Ordering::Relaxed);

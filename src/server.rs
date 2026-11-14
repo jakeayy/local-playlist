@@ -157,6 +157,7 @@ pub fn run(args: &[String]) -> Result<()> {
             loop {
                 std::thread::sleep(Duration::from_secs(300));
                 cleanup(&state, max_age);
+                crate::mem::trim();
                 if last_update.elapsed() > Duration::from_secs(24 * 3600) && state.ytdlp.ytdlp_source == Source::Managed {
                     last_update = Instant::now();
                     match state.ytdlp.install(Component::YtDlp, &|_, _| {}) {
@@ -229,30 +230,19 @@ fn handle(state: &State, mut req: Request) {
     let method = req.method().clone();
 
     match (method, path.as_str()) {
-        (Method::Get, "/" | "/index.html") => respond(
-            req,
-            Response::from_data(INDEX_HTML.as_bytes().to_vec())
-                .with_header(header("Content-Type", "text/html; charset=utf-8"))
-                .with_header(header("Cache-Control", "no-cache")),
-        ),
-        (Method::Get, "/boot.js") => respond(
-            req,
-            Response::from_data(BOOT_JS.as_bytes().to_vec())
-                .with_header(header("Content-Type", "text/javascript"))
-                .with_header(header("Cache-Control", "no-cache")),
-        ),
+        (Method::Get, "/" | "/index.html") => {
+            static_file(req, INDEX_HTML.as_bytes(), "text/html; charset=utf-8", None, "no-cache")
+        }
+        (Method::Get, "/boot.js") => static_file(req, BOOT_JS.as_bytes(), "text/javascript", None, "no-cache"),
         #[cfg(web_ui)]
-        (Method::Get, "/local_playlist.js") => respond(req, gz(APP_JS, "text/javascript")),
+        (Method::Get, "/local_playlist.js") => static_file(req, APP_JS, "text/javascript", Some("gzip"), "no-cache"),
         #[cfg(web_ui)]
-        (Method::Get, "/local_playlist_bg.wasm") => respond(req, gz(APP_WASM, "application/wasm")),
+        (Method::Get, "/local_playlist_bg.wasm") => {
+            static_file(req, APP_WASM, "application/wasm", Some("gzip"), "no-cache")
+        }
         (Method::Get, p) if p.starts_with("/assets/icons/") && p.ends_with(".svg") => {
             match ICONS.iter().find(|(name, _)| *name == &p["/assets/icons/".len()..]) {
-                Some((_, bytes)) => respond(
-                    req,
-                    Response::from_data(bytes.to_vec())
-                        .with_header(header("Content-Type", "image/svg+xml"))
-                        .with_header(header("Cache-Control", "public, max-age=86400")),
-                ),
+                Some((_, bytes)) => static_file(req, bytes, "image/svg+xml", None, "public, max-age=86400"),
                 _ => respond(req, error(404, "not found")),
             }
         }
@@ -274,6 +264,20 @@ fn handle(state: &State, mut req: Request) {
             let resp = resolve(state, &query);
             respond(req, resp)
         }
+        (Method::Get, "/api/segments") => {
+            if !authorized(state, &req, &query) {
+                return respond(req, error(401, "unauthorized"));
+            }
+            let resp = segments(&query);
+            respond(req, resp)
+        }
+        (Method::Get, "/api/cover") => {
+            if !authorized(state, &req, &query) {
+                return respond(req, error(401, "unauthorized"));
+            }
+            let resp = cover(state, &query);
+            respond(req, resp)
+        }
         (Method::Get, "/api/audio") => {
             if !authorized(state, &req, &query) {
                 return respond(req, error(401, "unauthorized"));
@@ -288,12 +292,46 @@ fn respond<R: Read>(req: Request, resp: Response<R>) {
     let _ = req.respond(with_security(resp));
 }
 
-#[cfg(web_ui)]
-fn gz(bytes: &'static [u8], ty: &str) -> Response<std::io::Cursor<Vec<u8>>> {
-    Response::from_data(bytes.to_vec())
-        .with_header(header("Content-Type", ty))
-        .with_header(header("Content-Encoding", "gzip"))
-        .with_header(header("Cache-Control", "no-cache"))
+/// Serve a file embedded in the binary, straight from the binary (no copy per
+/// request: the web UI is 6 MB). With an ETag, so browsers revalidate instead
+/// of downloading it again on every visit.
+fn static_file(req: Request, bytes: &'static [u8], ty: &str, encoding: Option<&str>, cache: &str) {
+    let etag = static_etag();
+    let fresh = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("If-None-Match"))
+        .is_some_and(|h| h.value.as_str().split(',').any(|t| t.trim().trim_start_matches("W/") == etag));
+    let headers = [header("ETag", etag), header("Cache-Control", cache)];
+    if fresh {
+        let resp = Response::new(StatusCode(304), headers.to_vec(), std::io::empty(), Some(0), None);
+        return respond(req, resp);
+    }
+    let mut resp = Response::new(StatusCode(200), headers.to_vec(), std::io::Cursor::new(bytes), Some(bytes.len()), None)
+        .with_header(header("Content-Type", ty));
+    if let Some(encoding) = encoding {
+        resp.add_header(header("Content-Encoding", encoding));
+    }
+    respond(req, resp)
+}
+
+/// ETag shared by the embedded files: a hash of all of them, so it changes
+/// whenever any does (i.e. with each build that changes the web UI).
+fn static_etag() -> &'static str {
+    use std::hash::{Hash as _, Hasher as _};
+    static ETAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ETAG.get_or_init(|| {
+        let mut h = std::hash::DefaultHasher::new();
+        INDEX_HTML.hash(&mut h);
+        BOOT_JS.hash(&mut h);
+        #[cfg(web_ui)]
+        {
+            APP_JS.hash(&mut h);
+            APP_WASM.hash(&mut h);
+        }
+        ICONS.hash(&mut h);
+        format!("\"{:016x}\"", h.finish())
+    })
 }
 
 // ------------------------------------------------------------------- auth
@@ -366,6 +404,45 @@ fn resolve(state: &State, query: &HashMap<String, String>) -> Response<std::io::
     let collection = query.get("collection").is_some_and(|v| v == "1");
     match sources::resolve(&link, collection, &state.paths, &state.ytdlp, &Credentials::default()) {
         Ok(r) => json(200, serde_json::to_value(r).unwrap_or_default()),
+        Err(e) => error(502, format!("{e:#}")),
+    }
+}
+
+/// SponsorBlock segments of a YouTube video (the browser can't reach the API itself).
+fn segments(query: &HashMap<String, String>) -> Response<std::io::Cursor<Vec<u8>>> {
+    let Some(id) = query
+        .get("id")
+        .filter(|id| sources::youtube::is_video_id(id))
+    else {
+        return error(400, "missing or invalid id");
+    };
+    match crate::sponsorblock::fetch(id) {
+        Ok(segs) => json(200, serde_json::to_value(segs).unwrap_or_default()),
+        Err(e) => error(502, format!("{e:#}")),
+    }
+}
+
+fn cover(state: &State, query: &HashMap<String, String>) -> Response<std::io::Cursor<Vec<u8>>> {
+    let platform = match query.get("platform").map(String::as_str) {
+        Some("yt") => Platform::YouTube,
+        Some("sc") => Platform::SoundCloud,
+        _ => return error(400, "missing or invalid platform"),
+    };
+    let Some(id) = query
+        .get("id")
+        .filter(|id| crate::cover::valid_id(platform, id))
+    else {
+        return error(400, "missing or invalid id");
+    };
+    let size = query.get("size").and_then(|s| crate::cover::Size::from_param(s)).unwrap_or(crate::cover::Size::Full);
+    match crate::cover::get(&state.paths, platform, id, size) {
+        Ok(bytes) => {
+            let mime =
+                crate::cover::image_format(&bytes).map_or("application/octet-stream", |f| f.mime());
+            Response::from_data(bytes)
+                .with_header(header("Content-Type", mime))
+                .with_header(header("Cache-Control", "private, max-age=86400"))
+        }
         Err(e) => error(502, format!("{e:#}")),
     }
 }

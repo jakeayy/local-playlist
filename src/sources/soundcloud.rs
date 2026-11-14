@@ -92,6 +92,20 @@ fn user_info(user: &Value) -> Result<(u64, String)> {
     Ok((id, name))
 }
 
+/// Artwork URL of a track (the 100×100 `-large` variant), falling back to the
+/// uploader's avatar.
+pub fn artwork_url(id: &str, paths: &Paths) -> Result<Option<String>> {
+    let v = api_get(&format!("{API}/tracks/{id}"), paths, None)?;
+    let url = [
+        v["artwork_url"].as_str(),
+        v.pointer("/user/avatar_url").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|u| !u.is_empty() && !u.contains("default_avatar"));
+    Ok(url.map(str::to_string))
+}
+
 fn api_resolve(url: &str, paths: &Paths, auth: Option<&str>) -> Result<Value> {
     let encoded: String = url::form_urlencoded::byte_serialize(url.as_bytes()).collect();
     api_get(&format!("{API}/resolve?url={encoded}"), paths, auth)

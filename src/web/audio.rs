@@ -22,6 +22,18 @@ pub enum Input {
     Url(String),
 }
 
+/// What is being played, for visualizations. Not wired up in the browser yet.
+#[derive(Clone)]
+pub struct Tap;
+
+impl Tap {
+    /// Same contract as the desktop tap; always silent here.
+    pub fn latest(&self, out: &mut [f32]) -> (u32, u64) {
+        out.fill(0.0);
+        (44_100, 0)
+    }
+}
+
 pub struct Audio {
     el: HtmlAudioElement,
     loaded: bool,
@@ -104,6 +116,10 @@ impl Audio {
 
     pub fn set_volume(&self, volume: f32) {
         self.el.set_volume(volume.clamp(0.0, 1.0) as f64);
+    }
+
+    pub fn tap(&self) -> Tap {
+        Tap
     }
 
     pub fn finished(&self) -> bool {

@@ -88,6 +88,37 @@ pub async fn resolve(link: &Link, as_collection: bool) -> Result<Resolved> {
     Ok(serde_json::from_value(json)?)
 }
 
+/// SponsorBlock segments of a YouTube video, looked up by the server.
+pub async fn segments(video_id: &str) -> Result<Vec<crate::sponsorblock::Segment>> {
+    let (status, json) = fetch("GET", &format!("/api/segments?id={}", enc(video_id)), None).await?;
+    if status != 200 {
+        return Err(api_error(status, &json));
+    }
+    Ok(serde_json::from_value(json)?)
+}
+
+/// Cover image bytes of a track, fetched (and cached) by the server.
+pub async fn cover(platform: crate::model::Platform, id: &str, size: crate::cover::Size) -> Result<Vec<u8>> {
+    let url = format!("/api/cover?platform={}&id={}&size={}", platform.short(), enc(id), size.param());
+    let req = Request::new_with_str(&url).map_err(|_| anyhow!("bad request"))?;
+    if let Some(t) = token() {
+        let _ = req.headers().set("Authorization", &format!("Bearer {t}"));
+    }
+    let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
+    let resp: Response = JsFuture::from(window.fetch_with_request(&req))
+        .await
+        .map_err(|_| anyhow!("can't reach the server"))?
+        .dyn_into()
+        .map_err(|_| anyhow!("bad response"))?;
+    if resp.status() != 200 {
+        bail!("no cover (server error {})", resp.status());
+    }
+    let buf = JsFuture::from(resp.array_buffer().map_err(|_| anyhow!("bad response"))?)
+        .await
+        .map_err(|_| anyhow!("bad response"))?;
+    Ok(js_sys::Uint8Array::new(&buf).to_vec())
+}
+
 /// Stream URL for a track. `<audio>` can't send headers, so the token goes
 /// in the query (same origin only; the server sends no-referrer).
 pub fn audio_url(track: &Track) -> String {

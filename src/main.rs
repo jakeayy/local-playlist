@@ -1,25 +1,21 @@
-//! Local Playlist entry point: desktop app, login helper, diagnostics or server.
+//! Local Playlist entry point: desktop app, diagnostics or server. (The
+//! webview login is a separate executable, see `src/bin/login.rs`.)
 
 #[cfg(feature = "desktop")]
-use local_playlist::{login, secrets, sources, ytdlp};
+use local_playlist::{secrets, sources, ytdlp};
 #[cfg(feature = "desktop")]
 use local_playlist::model;
 #[cfg(feature = "server")]
 use local_playlist::server;
 
 fn main() {
+    local_playlist::mem::tune();
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str);
 
     if matches!(mode, Some("--version" | "-V")) {
         println!("local-playlist {}", env!("LOCAL_PLAYLIST_VERSION"));
         return;
-    }
-
-    // Webview login helper process (see login.rs).
-    #[cfg(feature = "desktop")]
-    if mode == Some(login::LOGIN_ARG) {
-        login::run_helper(args.get(2).map(String::as_str).unwrap_or_default());
     }
 
     #[cfg(feature = "server")]
@@ -29,6 +25,14 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+
+    #[cfg(not(feature = "server"))]
+    if matches!(mode, Some("--server" | "--headless")) {
+        eprintln!(
+            "This build doesn't include the server. Build it with: cargo build --release --features server"
+        );
+        std::process::exit(2);
     }
 
     #[cfg(feature = "desktop")]

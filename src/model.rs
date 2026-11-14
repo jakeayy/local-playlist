@@ -69,14 +69,32 @@ impl Track {
         }
     }
 
+    /// Whether every search term occurs in the title or artist (terms lowercase).
+    pub fn matches(&self, terms: &[String]) -> bool {
+        let (title, artist) = (self.title.to_lowercase(), self.artist.to_lowercase());
+        terms
+            .iter()
+            .all(|t| title.contains(t.as_str()) || artist.contains(t.as_str()))
+    }
+
     /// File name stem for this track's audio: `<Platform>-<id>`.
     pub fn file_key(&self) -> String {
-        let safe: String = self
-            .source_id
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-            .collect();
-        format!("{}-{}", self.platform.label(), safe)
+        let mut key = String::with_capacity(self.platform.label().len() + 1 + self.source_id.len());
+        self.write_file_key(&mut key);
+        key
+    }
+
+    /// [`Track::file_key`] into `out` (cleared first), to check many tracks
+    /// without allocating for each.
+    pub fn write_file_key(&self, out: &mut String) {
+        out.clear();
+        out.push_str(self.platform.label());
+        out.push('-');
+        out.extend(
+            self.source_id
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }),
+        );
     }
 }
 
@@ -113,6 +131,12 @@ pub struct Settings {
     pub removed_cache_mb: u64,
     /// System / light / dark.
     pub appearance: Appearance,
+    /// Tint the theme with the playing track's cover colour.
+    pub cover_colors: bool,
+    /// Skip SponsorBlock segments in YouTube tracks.
+    pub sponsorblock: bool,
+    /// SponsorBlock categories to skip (see `sponsorblock::CATEGORIES`).
+    pub sponsorblock_categories: Vec<String>,
 }
 
 impl Default for Settings {
@@ -126,6 +150,9 @@ impl Default for Settings {
             music_dir: None,
             removed_cache_mb: 2048,
             appearance: Default::default(),
+            cover_colors: true,
+            sponsorblock: true,
+            sponsorblock_categories: crate::sponsorblock::default_categories(),
         }
     }
 }
@@ -195,13 +222,18 @@ impl Library {
         }
     }
 
-    /// Atomically write the library (write to temp file, then rename).
+    /// Atomically write the library (write to temp file, then rename). The
+    /// JSON is streamed to the file rather than built in memory first.
     pub fn save(&self, path: &Path) -> Result<()> {
+        use std::io::Write as _;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        serde_json::to_writer_pretty(&mut out, self)?;
+        out.flush()?;
+        drop(out);
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
@@ -263,4 +295,30 @@ pub enum Appearance {
     System,
     Light,
     Dark,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_matches_title_and_artist() {
+        let t = Track::new(
+            Platform::YouTube,
+            "x",
+            "u",
+            "Never Gonna Give You Up",
+            "Rick Astley",
+            None,
+        );
+        let q = |s: &str| {
+            s.split_whitespace()
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>()
+        };
+        assert!(t.matches(&q("")));
+        assert!(t.matches(&q("gonna")));
+        assert!(t.matches(&q("RICK never")));
+        assert!(!t.matches(&q("rick down")));
+    }
 }
