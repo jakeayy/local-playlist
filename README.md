@@ -159,6 +159,7 @@ The server-only build needs none of these.
 ## Development
 
 ```sh
+cargo fmt                        # format (CI checks it; settings in rustfmt.toml)
 cargo test                       # offline unit tests
 cargo test -- --ignored          # live tests against YouTube / SoundCloud / GitHub
 local-playlist --version         # version + commit, for bug reports
@@ -186,7 +187,8 @@ Approximate release sizes: desktop app (including server and web UI) 48 MB, serv
 9.5 MB, web UI 5.8 MB gzipped.
 
 Bug reports, site-breakage reports and feature requests use issue forms. Pull requests
-come with a checklist covering the three builds and the privacy rules.
+come with a checklist covering the three builds and the privacy rules; see
+[CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately ([SECURITY.md](SECURITY.md)).
 
 Layout:
 
@@ -205,3 +207,15 @@ Layout:
 | `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
 | `src/download.rs` | Shared download state |
 | `src/storage.rs` | Music folder layout, removed-tracks cache |
+
+## License
+
+Copyright (C) 2026 jakeayy and Local Playlist contributors.
+
+Local Playlist is free software: you can redistribute it and/or modify it under the terms
+of the GNU General Public License as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. It is distributed
+WITHOUT ANY WARRANTY; see [LICENSE](LICENSE) for details.
+
+The bundled Noto Sans fonts are under the SIL Open Font License
+([assets/fonts/OFL.txt](assets/fonts/OFL.txt)).
