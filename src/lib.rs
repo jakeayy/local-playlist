@@ -55,10 +55,7 @@ pub fn now_ms() -> f64 {
     #[cfg(target_family = "wasm")]
     return js_sys::Date::now();
     #[cfg(not(target_family = "wasm"))]
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
 
 #[cfg(feature = "desktop")]
@@ -71,10 +68,42 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     AppIcons,
     [
-        ArrowDown, ArrowUp, AudioLines, ChartColumn, Monitor, Moon, Sun, CircleAlert, CircleCheck, CircleQuestionMark, CircleStop, Disc3,
-        Download, FolderOpen, HardDriveDownload, Import, Link, ListMusic, LoaderCircle, LogIn, LogOut, Pause,
-        Play, Plus, RefreshCw, Repeat, Repeat1, Server, Settings, Shuffle, SkipBack, SkipForward, Trash, Volume2,
-        VolumeX, X
+        ArrowDown,
+        ArrowUp,
+        AudioLines,
+        ChartColumn,
+        Monitor,
+        Moon,
+        Sun,
+        CircleAlert,
+        CircleCheck,
+        CircleQuestionMark,
+        CircleStop,
+        Disc3,
+        Download,
+        FolderOpen,
+        HardDriveDownload,
+        Import,
+        Link,
+        ListMusic,
+        LoaderCircle,
+        LogIn,
+        LogOut,
+        Pause,
+        Play,
+        Plus,
+        RefreshCw,
+        Repeat,
+        Repeat1,
+        Server,
+        Settings,
+        Shuffle,
+        SkipBack,
+        SkipForward,
+        Trash,
+        Volume2,
+        VolumeX,
+        X
     ]
 );
 

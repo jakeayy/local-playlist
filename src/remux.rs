@@ -183,7 +183,8 @@ fn collect(data: &[u8], top: &[Atom], tracks: &mut [Track], trex: &[(u32, Defaul
             if flags & 0x20 != 0 {
                 d.flags = r.u32()?;
             }
-            let track = tracks.iter_mut().find(|t| t.id == id).with_context(|| format!("fragment for unknown track {id}"))?;
+            let track =
+                tracks.iter_mut().find(|t| t.id == id).with_context(|| format!("fragment for unknown track {id}"))?;
             let mut next = base;
             for trun in atoms(data, traf.body, traf.end)?.into_iter().filter(|a| a.is(b"trun")) {
                 let mut r = reader(data, trun);
@@ -429,7 +430,8 @@ pub fn defragment_into(data: &[u8], out: &mut impl Write) -> Result<()> {
             .is_ok_and(|h| data.get(h.body + 8..h.body + 12) == Some(b"soun"))
     });
     let mut ftyp = Vec::new();
-    let brands: &[&[u8; 4]] = if audio_only { &[b"M4A ", b"M4A ", b"isom", b"mp42"] } else { &[b"isom", b"isom", b"iso2", b"mp41"] };
+    let brands: &[&[u8; 4]] =
+        if audio_only { &[b"M4A ", b"M4A ", b"isom", b"mp42"] } else { &[b"isom", b"isom", b"iso2", b"mp41"] };
     for (i, b) in brands.iter().enumerate() {
         ftyp.extend_from_slice(*b);
         if i == 0 {
@@ -449,7 +451,8 @@ pub fn defragment_into(data: &[u8], out: &mut impl Write) -> Result<()> {
             offsets[t][c] = pos;
             pos += tracks[t].chunks[c].len() as u64;
         }
-        let media_duration = |t: &Track| t.chunks.iter().flat_map(|c| &c.samples).map(|s| s.duration as u64).sum::<u64>();
+        let media_duration =
+            |t: &Track| t.chunks.iter().flat_map(|c| &c.samples).map(|s| s.duration as u64).sum::<u64>();
         let movie_duration = |t: &Track| media_duration(t) * movie_timescale as u64 / t.timescale as u64;
         let longest = tracks.iter().map(movie_duration).max().unwrap_or(0);
         rebuild(
@@ -490,7 +493,9 @@ pub fn defragment_into(data: &[u8], out: &mut impl Write) -> Result<()> {
                                     data,
                                     c,
                                     |c| {
-                                        c.is(b"stbl").then(|| sample_table(data, c, track, &offsets[i], co64)).transpose()
+                                        c.is(b"stbl")
+                                            .then(|| sample_table(data, c, track, &offsets[i], co64))
+                                            .transpose()
                                     },
                                     &[],
                                 )?))
@@ -592,10 +597,8 @@ mod tests {
     fn fragmented(sizes: &[u32]) -> Vec<u8> {
         let stsd = full_atom(b"stsd", 0, 0, &[0, 0, 0, 1, 0, 0, 0, 8, b'm', b'p', b'4', b'a']);
         let empty = |k: &[u8; 4], n: usize| full_atom(k, 0, 0, &vec![0; n]);
-        let stbl = atom(
-            b"stbl",
-            &[stsd, empty(b"stts", 4), empty(b"stsc", 4), empty(b"stsz", 8), empty(b"stco", 4)].concat(),
-        );
+        let stbl =
+            atom(b"stbl", &[stsd, empty(b"stts", 4), empty(b"stsc", 4), empty(b"stsz", 8), empty(b"stco", 4)].concat());
         let minf = atom(b"minf", &[full_atom(b"smhd", 0, 0, &[0; 4]), stbl].concat());
         let mut hdlr = vec![0; 4];
         hdlr.extend_from_slice(b"soun");
@@ -606,7 +609,8 @@ mod tests {
         let trak = atom(b"trak", &[tkhd, mdia].concat());
         let mvhd = full_atom(b"mvhd", 0, 0, &[&[0; 8][..], &1000u32.to_be_bytes(), &[0; 84]].concat());
         // Defaults: description 1, duration 1024.
-        let trex = full_atom(b"trex", 0, 0, &[1u32, 1, 1024, 0, 0].iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<_>>());
+        let trex =
+            full_atom(b"trex", 0, 0, &[1u32, 1, 1024, 0, 0].iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<_>>());
         let moov = atom(b"moov", &[mvhd, atom(b"mvex", &trex), trak].concat());
         let mut file = [atom(b"ftyp", b"dash\0\0\0\0iso6mp41"), moov].concat();
         let mut byte = 0u8;
@@ -663,7 +667,11 @@ mod tests {
         // One duration run of 5 × 1024; mdhd duration = 5120.
         let stts = need(&out, stbl, b"stts").unwrap();
         assert_eq!(
-            [u32_at(&out, stts.body + 4).unwrap(), u32_at(&out, stts.body + 8).unwrap(), u32_at(&out, stts.body + 12).unwrap()],
+            [
+                u32_at(&out, stts.body + 4).unwrap(),
+                u32_at(&out, stts.body + 8).unwrap(),
+                u32_at(&out, stts.body + 12).unwrap()
+            ],
             [1, 5, 1024]
         );
         let mdhd = need(&out, mdia, b"mdhd").unwrap();

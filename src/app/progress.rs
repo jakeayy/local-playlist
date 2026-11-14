@@ -39,19 +39,11 @@ impl LocalPlaylist {
                     .get(&now.track.source_id)
                     .filter(|_| now.track.platform == Platform::YouTube)
                     .map(|(_, segs)| {
-                        crate::sponsorblock::skipped_ranges(
-                            segs,
-                            &self.library.settings.sponsorblock_categories,
-                        )
-                        .into_iter()
-                        .filter(|&(start, _)| start < total)
-                        .map(|(start, end)| {
-                            (
-                                (start / total) as f32,
-                                ((end.min(total) - start) / total) as f32,
-                            )
-                        })
-                        .collect()
+                        crate::sponsorblock::skipped_ranges(segs, &self.library.settings.sponsorblock_categories)
+                            .into_iter()
+                            .filter(|&(start, _)| start < total)
+                            .map(|(start, end)| ((start / total) as f32, ((end.min(total) - start) / total) as f32))
+                            .collect()
                     })
                     .unwrap_or_default()
             }
@@ -76,22 +68,18 @@ impl LocalPlaylist {
                     .when(!skipped.is_empty(), |d| {
                         // Skipped parts, drawn over the slider track (24 px row,
                         // 6 px track). No listeners, so clicks reach the slider.
-                        d.child(
-                            div().absolute().inset_0().flex().items_center().child(
-                                div().relative().w_full().h(px(6.)).children(skipped.iter().map(
-                                    |&(start, len)| {
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .bottom_0()
-                                            .left(relative(start))
-                                            .w(relative(len))
-                                            .min_w(px(2.))
-                                            .bg(theme.danger.opacity(0.85))
-                                    },
-                                )),
-                            ),
-                        )
+                        d.child(div().absolute().inset_0().flex().items_center().child(
+                            div().relative().w_full().h(px(6.)).children(skipped.iter().map(|&(start, len)| {
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(relative(start))
+                                    .w(relative(len))
+                                    .min_w(px(2.))
+                                    .bg(theme.danger.opacity(0.85))
+                            })),
+                        ))
                     }),
             )
             .child(div().w(px(44.)).child(total.map(fmt).unwrap_or_else(|| "--:--".into())))

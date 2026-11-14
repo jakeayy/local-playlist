@@ -42,10 +42,8 @@ fn main() {
 /// send client hints, so the UA string alone is consistent.
 fn firefox_user_agent() -> String {
     // Firefox ships every 4 weeks; 128 was released 2024-07-09.
-    let days = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() / 86_400)
-        .unwrap_or(0);
+    let days =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() / 86_400).unwrap_or(0);
     let base_day = 19_913; // 2024-07-09
     let version = 128 + days.saturating_sub(base_day) / 28;
     let platform = if cfg!(target_os = "windows") {
@@ -112,10 +110,8 @@ fn helper(platform_arg: &str) -> Result<()> {
         .build(&event_loop)
         .context("could not open login window")?;
 
-    let builder = WebViewBuilder::new()
-        .with_url(t.start_url)
-        .with_user_agent(firefox_user_agent())
-        .with_incognito(true);
+    let builder =
+        WebViewBuilder::new().with_url(t.start_url).with_user_agent(firefox_user_agent()).with_incognito(true);
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let webview = {
@@ -145,9 +141,8 @@ fn helper(platform_arg: &str) -> Result<()> {
                 }
                 cookies.sort_by(|a, b| (&a.domain, &a.name).cmp(&(&b.domain, &b.name)));
                 cookies.dedup_by(|a, b| a.domain == b.domain && a.name == b.name && a.path == b.path);
-                let logged_in = cookies
-                    .iter()
-                    .any(|c| t.session_cookies.contains(&c.name.as_str()) && !c.value.is_empty());
+                let logged_in =
+                    cookies.iter().any(|c| t.session_cookies.contains(&c.name.as_str()) && !c.value.is_empty());
                 // For YouTube wait until we're back on youtube.com so all cookies are set.
                 let on_site = match platform {
                     Platform::YouTube => webview.url().is_ok_and(|u| u.contains("youtube.com")),

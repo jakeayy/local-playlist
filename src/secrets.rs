@@ -8,9 +8,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
 #[cfg(feature = "desktop")]
 use anyhow::Context as _;
+use anyhow::{Result, bail};
 #[cfg(feature = "desktop")]
 use chacha20poly1305::aead::{Aead, KeyInit};
 #[cfg(feature = "desktop")]
@@ -307,11 +307,8 @@ pub fn find<'a>(cookies: &'a [StoredCookie], name: &str) -> Option<&'a str> {
 pub fn to_netscape(cookies: &[StoredCookie]) -> String {
     let mut out = String::from("# Netscape HTTP Cookie File\n");
     for c in cookies {
-        let domain = if c.domain.starts_with('.') || c.domain.is_empty() {
-            c.domain.clone()
-        } else {
-            format!(".{}", c.domain)
-        };
+        let domain =
+            if c.domain.starts_with('.') || c.domain.is_empty() { c.domain.clone() } else { format!(".{}", c.domain) };
         out.push_str(&format!(
             "{}{}\tTRUE\t{}\t{}\t{}\t{}\t{}\n",
             if c.http_only { "#HttpOnly_" } else { "" },

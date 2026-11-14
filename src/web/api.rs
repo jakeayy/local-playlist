@@ -76,11 +76,7 @@ pub async fn check() -> bool {
 }
 
 pub async fn resolve(link: &Link, as_collection: bool) -> Result<Resolved> {
-    let url = format!(
-        "/api/resolve?url={}&collection={}",
-        enc(&link_url(link)),
-        if as_collection { 1 } else { 0 }
-    );
+    let url = format!("/api/resolve?url={}&collection={}", enc(&link_url(link)), if as_collection { 1 } else { 0 });
     let (status, json) = fetch("GET", &url, None).await?;
     if status != 200 {
         return Err(api_error(status, &json));

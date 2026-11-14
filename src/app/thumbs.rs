@@ -209,8 +209,10 @@ pub(super) fn cover_tile(image: Option<Arc<RenderImage>>, size: Pixels, theme: &
     let tile = div().size(size).flex_none().rounded_md().overflow_hidden().bg(theme.muted);
     match image {
         Some(image) => tile.child(img(image).size_full()),
-        None => tile.flex().items_center().justify_center().child(
-            Icon::new(IconName::Disc3).small().text_color(theme.muted_foreground.opacity(0.6)),
-        ),
+        None => tile
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(Icon::new(IconName::Disc3).small().text_color(theme.muted_foreground.opacity(0.6))),
     }
 }

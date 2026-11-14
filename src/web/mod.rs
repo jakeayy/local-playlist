@@ -51,23 +51,20 @@ const FONTS: [&[u8]; 3] = [
 pub fn start() {
     gpui_kit::platform::web_init();
     // Icons are fetched from the server that served the page (/assets/icons/…).
-    gpui_kit::platform::single_threaded_web()
-        .with_assets(gpui_kit::assets::Assets::new(origin()))
-        .run(|cx| {
-            // Browsers expose no system fonts to the canvas renderer: bundle one.
-            if let Err(e) = cx.text_system().add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect()) {
-                web_sys::console::error_1(&format!("font: {e:#}").into());
-            }
-            gpui_kit::init(cx);
-            theme::init(cx);
-            gpui_kit::component::Theme::update(cx, |t| t.font_family = "Noto Sans".into());
-            let appearance = model::Library::load(std::path::Path::new("/"))
-                .map(|l| l.settings.appearance)
-                .unwrap_or_default();
-            theme::apply(appearance, None, cx);
-            gpui_kit::open_window(crate::window_options(cx), cx, |window, cx| {
-                cx.new(|cx| app::LocalPlaylist::new(model::Paths::web(), window, cx))
-            })
-            .expect("failed to open window");
-        });
+    gpui_kit::platform::single_threaded_web().with_assets(gpui_kit::assets::Assets::new(origin())).run(|cx| {
+        // Browsers expose no system fonts to the canvas renderer: bundle one.
+        if let Err(e) = cx.text_system().add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect()) {
+            web_sys::console::error_1(&format!("font: {e:#}").into());
+        }
+        gpui_kit::init(cx);
+        theme::init(cx);
+        gpui_kit::component::Theme::update(cx, |t| t.font_family = "Noto Sans".into());
+        let appearance =
+            model::Library::load(std::path::Path::new("/")).map(|l| l.settings.appearance).unwrap_or_default();
+        theme::apply(appearance, None, cx);
+        gpui_kit::open_window(crate::window_options(cx), cx, |window, cx| {
+            cx.new(|cx| app::LocalPlaylist::new(model::Paths::web(), window, cx))
+        })
+        .expect("failed to open window");
+    });
 }

@@ -183,7 +183,12 @@ mod tests {
 
     #[test]
     fn merges_ranges_for_display() {
-        let segs = [seg("selfpromo", 45., 50.), seg("sponsor", 10., 31.), seg("music_offtopic", 30., 45.), seg("intro", 0., 5.)];
+        let segs = [
+            seg("selfpromo", 45., 50.),
+            seg("sponsor", 10., 31.),
+            seg("music_offtopic", 30., 45.),
+            seg("intro", 0., 5.),
+        ];
         assert_eq!(skipped_ranges(&segs, &default_categories()), vec![(10., 50.)]);
     }
 

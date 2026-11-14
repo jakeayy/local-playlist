@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
 #[cfg(not(target_family = "wasm"))]
 use anyhow::Context as _;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -72,9 +72,7 @@ impl Track {
     /// Whether every search term occurs in the title or artist (terms lowercase).
     pub fn matches(&self, terms: &[String]) -> bool {
         let (title, artist) = (self.title.to_lowercase(), self.artist.to_lowercase());
-        terms
-            .iter()
-            .all(|t| title.contains(t.as_str()) || artist.contains(t.as_str()))
+        terms.iter().all(|t| title.contains(t.as_str()) || artist.contains(t.as_str()))
     }
 
     /// File name stem for this track's audio: `<Platform>-<id>`.
@@ -91,9 +89,7 @@ impl Track {
         out.push_str(self.platform.label());
         out.push('-');
         out.extend(
-            self.source_id
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }),
+            self.source_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }),
         );
     }
 }
@@ -215,8 +211,7 @@ impl Library {
 impl Library {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {}", path.display())),
+            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("failed to parse {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
         }
@@ -266,8 +261,8 @@ impl Paths {
 
     #[cfg(not(target_family = "wasm"))]
     pub fn new() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from("", "", "local-playlist")
-            .context("could not determine home directory")?;
+        let dirs =
+            directories::ProjectDirs::from("", "", "local-playlist").context("could not determine home directory")?;
         let paths = Self { data: dirs.data_dir().to_path_buf(), cache: dirs.cache_dir().to_path_buf() };
         std::fs::create_dir_all(&paths.data)?;
         Ok(paths)
@@ -303,19 +298,8 @@ mod tests {
 
     #[test]
     fn search_matches_title_and_artist() {
-        let t = Track::new(
-            Platform::YouTube,
-            "x",
-            "u",
-            "Never Gonna Give You Up",
-            "Rick Astley",
-            None,
-        );
-        let q = |s: &str| {
-            s.split_whitespace()
-                .map(str::to_lowercase)
-                .collect::<Vec<_>>()
-        };
+        let t = Track::new(Platform::YouTube, "x", "u", "Never Gonna Give You Up", "Rick Astley", None);
+        let q = |s: &str| s.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
         assert!(t.matches(&q("")));
         assert!(t.matches(&q("gonna")));
         assert!(t.matches(&q("RICK never")));

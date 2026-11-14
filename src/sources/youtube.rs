@@ -138,9 +138,12 @@ pub fn playlist(list: &str, auth: Option<YtAuth<'_>>) -> Result<(String, Vec<Tra
         Err(_) if let Some(a) = auth => match playlist_with(list, auth) {
             Ok(r) => Ok(r),
             // The playlist may belong to another channel (Brand Account) of this login.
-            Err(e) => other_channels(a).into_iter().find_map(|page| {
-                playlist_with(list, Some(YtAuth { cookies: a.cookies, page_id: page.as_deref() })).ok()
-            }).ok_or(e),
+            Err(e) => other_channels(a)
+                .into_iter()
+                .find_map(|page| {
+                    playlist_with(list, Some(YtAuth { cookies: a.cookies, page_id: page.as_deref() })).ok()
+                })
+                .ok_or(e),
         },
         Err(e) => Err(e),
     }
@@ -159,7 +162,9 @@ fn playlist_with(list: &str, auth: Option<YtAuth<'_>>) -> Result<(String, Vec<Tr
     let browse_id = format!("VL{list}");
     let first = innertube("browse", json!({ "browseId": browse_id }), auth)?;
     if auth.is_some() && is_logged_out(&first) {
-        bail!("YouTube didn't accept the saved login (the session may have expired). Log out and log in again in Settings.");
+        bail!(
+            "YouTube didn't accept the saved login (the session may have expired). Log out and log in again in Settings."
+        );
     }
 
     if let Some(alert) = find_alert(&first) {
@@ -168,11 +173,7 @@ fn playlist_with(list: &str, auth: Option<YtAuth<'_>>) -> Result<(String, Vec<Tr
     let title = first
         .pointer("/metadata/playlistMetadataRenderer/title")
         .and_then(Value::as_str)
-        .or_else(|| {
-            first
-                .pointer("/header/pageHeaderRenderer/pageTitle")
-                .and_then(Value::as_str)
-        })
+        .or_else(|| first.pointer("/header/pageHeaderRenderer/pageTitle").and_then(Value::as_str))
         .unwrap_or("YouTube playlist")
         .to_string();
 
@@ -208,7 +209,12 @@ pub fn diagnose(list: &str, auth: Option<YtAuth<'_>>) -> Result<String> {
         names.sort();
         out += &format!("cookies: {}\n", names.join(", "));
         out += &format!("acting as brand channel: {}\n", a.page_id.is_some());
-        out += &format!("authorization header: {}\n", sapisid_hash(a.cookies).map(|h| h.split(' ').step_by(2).collect::<Vec<_>>().join(", ")).unwrap_or("none".into()));
+        out += &format!(
+            "authorization header: {}\n",
+            sapisid_hash(a.cookies)
+                .map(|h| h.split(' ').step_by(2).collect::<Vec<_>>().join(", "))
+                .unwrap_or("none".into())
+        );
     } else {
         out += "no saved YouTube session\n";
     }
@@ -216,10 +222,7 @@ pub fn diagnose(list: &str, auth: Option<YtAuth<'_>>) -> Result<String> {
     let v = innertube("browse", json!({ "browseId": format!("VL{list}") }), auth)?;
     out += &format!("loggedOut: {}\n", is_logged_out(&v));
     out += &format!("alert: {:?}\n", find_alert(&v));
-    out += &format!(
-        "title: {:?}\n",
-        v.pointer("/metadata/playlistMetadataRenderer/title").and_then(Value::as_str)
-    );
+    out += &format!("title: {:?}\n", v.pointer("/metadata/playlistMetadataRenderer/title").and_then(Value::as_str));
     let mut tracks = Vec::new();
     collect_page(v.get("contents").unwrap_or(&Value::Null), &mut tracks);
     out += &format!("first page tracks: {}\n", tracks.len());
@@ -342,15 +345,10 @@ fn find_alert(v: &Value) -> Option<String> {
             return None;
         }
         let text = &r["text"];
-        text["simpleText"].as_str().map(str::to_string).or_else(|| {
-            Some(
-                text["runs"]
-                    .as_array()?
-                    .iter()
-                    .filter_map(|r| r["text"].as_str())
-                    .collect::<String>(),
-            )
-        })
+        text["simpleText"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| Some(text["runs"].as_array()?.iter().filter_map(|r| r["text"].as_str()).collect::<String>()))
     })
 }
 
@@ -423,10 +421,8 @@ fn from_lockup(l: &Value) -> Option<Track> {
         .pointer("/metadata/contentMetadataViewModel/metadataRows/0/metadataParts/0/text/content")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let duration = l
-        .pointer("/contentImage/thumbnailViewModel/overlays")
-        .and_then(Value::as_array)
-        .and_then(|overlays| {
+    let duration =
+        l.pointer("/contentImage/thumbnailViewModel/overlays").and_then(Value::as_array).and_then(|overlays| {
             overlays.iter().find_map(|o| {
                 o.pointer("/thumbnailBottomOverlayViewModel/badges")?
                     .as_array()?
@@ -473,7 +469,9 @@ mod tests {
 
     #[test]
     fn auth_header() {
-        let cookies = crate::secrets::parse_cookies("SAPISID=abc; __Secure-3PAPISID=def", crate::model::Platform::YouTube).unwrap();
+        let cookies =
+            crate::secrets::parse_cookies("SAPISID=abc; __Secure-3PAPISID=def", crate::model::Platform::YouTube)
+                .unwrap();
         let h = sapisid_hash(&cookies).unwrap();
         assert!(h.starts_with("SAPISIDHASH ") && h.contains(" SAPISID3PHASH "), "{h}");
         assert!(playlist("LL", None).is_err());
