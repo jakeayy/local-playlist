@@ -1,5 +1,9 @@
 # Local Playlist
 
+[![Latest release](https://img.shields.io/github/v/release/jakeayy/local-playlist?label=release)](https://github.com/jakeayy/local-playlist/releases/latest)
+[![Latest pre-release](https://img.shields.io/github/v/release/jakeayy/local-playlist?include_prereleases&label=pre-release)](https://github.com/jakeayy/local-playlist/releases)
+[![Docker image](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/jakeayy/local-playlist/pkgs/container/local-playlist)
+
 A privacy-friendly, local-first music player for links from **YouTube / YouTube Music** and
 **SoundCloud**. Paste links, build playlists that live on your machine, and play them
 directly in the app. No accounts, no logins, no telemetry.
@@ -100,11 +104,16 @@ Options: `--listen ADDR`, `--data-dir DIR` (or `$LOCAL_PLAYLIST_DATA`), `--passw
 
 ### Docker
 
+Images for x64 are published on GitHub's container registry: `latest` is the newest
+release, `dev` the newest build (development builds included), and each release also
+has its version as a tag (e.g. `0.1.0`).
+
 ```sh
-docker build -t local-playlist .
 docker run -d --name local-playlist -p 8080:8080 -v lp-data:/data \
-    -e LOCAL_PLAYLIST_PASSWORD='a long password' local-playlist
+    -e LOCAL_PLAYLIST_PASSWORD='a long password' ghcr.io/jakeayy/local-playlist:latest
 ```
+
+Or build the image yourself: `docker build -t local-playlist .`
 
 ### Building the web UI yourself
 
