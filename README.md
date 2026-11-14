@@ -79,8 +79,8 @@ LOCAL_PLAYLIST_PASSWORD='a long password' local-playlist --server --listen 0.0.0
 
 Open `http://<host>:8080`, enter the password, and use it like the desktop app.
 
-`--server` is in builds with the `server` feature (the Docker image, or
-`cargo build --release --features server`; see below).
+`--server` is in the server downloads on the Releases page (`…-server`), the Docker image,
+and builds with the `server` feature (`cargo build --release --features server`; see below).
 
 - **Privacy:** your playlists and settings stay in the browser (local storage). The server
   only looks up public links and streams their audio. It never receives platform logins,
@@ -164,13 +164,19 @@ cargo test -- --ignored          # live tests against YouTube / SoundCloud / Git
 local-playlist --version         # version + commit, for bug reports
 ```
 
-Builds for Linux and Windows (x64) are published on the Releases page by GitHub Actions:
+Builds for Linux and Windows (x64), the desktop app and the server (with the web UI), are
+published on the Releases page by GitHub Actions, each built on its own platform
+(`.github/workflows/build.yml`):
 
 - Every push to `main` that changes the code is built and published as the pre-release
   `dev-<commit>`, replacing the previous one (`.github/workflows/dev.yml`).
 - Bumping `version` in `Cargo.toml` publishes the release `v<version>` and removes the
   development pre-release (`.github/workflows/release.yml`). It can also be run by hand
   from the Actions tab (Release → Run workflow).
+
+On Windows the desktop app is a GUI program (no console window). Started from a terminal,
+its output and logs go to that terminal. The terminal doesn't wait for it, though, so they
+appear after the prompt. The server build is an ordinary console program.
 
 Release builds use full LTO with a single codegen unit (smaller, at least as fast, but
 slower to compile). The web build uses the size-focused `wasm-release` profile plus

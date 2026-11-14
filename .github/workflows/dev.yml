@@ -1,7 +1,7 @@
-# Development builds: every push to main that changes the code is built for
-# Linux and Windows (each on its own runner) and published as the pre-release
-# `dev-<commit>`, replacing the previous one. A push that bumps the version in
-# Cargo.toml is left to release.yml, which publishes it as v<version>.
+# Development builds: every push to main that changes the code is built (see
+# build.yml: desktop app and server for Linux and Windows) and published as
+# the pre-release `dev-<commit>`, replacing the previous one. A push that bumps
+# the version in Cargo.toml is left to release.yml, which publishes v<version>.
 
 name: Dev build
 
@@ -12,10 +12,13 @@ on:
       - "src/**"
       - "assets/**"
       - "web/**"
+      - "scripts/**"
       - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/dev.yml"
+      - ".github/workflows/build.yml"
+      - ".github/release-downloads.sh"
 
 # A newer push supersedes a build still running.
 concurrency:
@@ -24,9 +27,6 @@ concurrency:
 
 permissions:
   contents: write
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
   check:
@@ -58,59 +58,12 @@ jobs:
           echo "label=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build (${{ matrix.platform }})
+    name: Build
     needs: check
     if: needs.check.outputs.bump == 'false'
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            platform: linux-x64
-          - os: windows-2025
-            platform: windows-x64
-    runs-on: ${{ matrix.os }}
-    env:
-      PACKAGE: local-playlist-${{ needs.check.outputs.label }}-${{ matrix.platform }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev \
-            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb1-dev libwebkit2gtk-4.1-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --release --locked
-
-      - name: Package
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p "dist/$PACKAGE"
-          cp target/release/local-playlist target/release/local-playlist-login README.md "dist/$PACKAGE/"
-          tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
-
-      - name: Package
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force "dist/$env:PACKAGE" | Out-Null
-          Copy-Item target/release/local-playlist.exe, target/release/local-playlist-login.exe, README.md "dist/$env:PACKAGE/"
-          Compress-Archive -Path "dist/$env:PACKAGE" -DestinationPath "dist/$env:PACKAGE.zip"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.platform }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-          if-no-files-found: error
+    uses: ./.github/workflows/build.yml
+    with:
+      label: ${{ needs.check.outputs.label }}
 
   publish:
     name: Publish pre-release
@@ -123,6 +76,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
+          pattern: package-*
           path: dist
           merge-multiple: true
 
@@ -143,11 +97,11 @@ jobs:
           {
             echo "Development build of ${GITHUB_SHA::7} on \`main\`. It may be unstable; the latest release is under Releases."
             echo
-            echo "**Changes:**"
+            .github/release-downloads.sh "$TAG"
+            echo
+            echo "### Changes"
             echo
             echo "$MESSAGE"
-            echo
-            echo "**Downloads:** \`*-linux-x64.tar.gz\` (Linux x64) and \`*-windows-x64.zip\` (Windows x64). Keep \`local-playlist-login\` next to \`local-playlist\`: it's the window used for logging in to YouTube / SoundCloud (on Linux it needs WebKitGTK 4.1)."
           } > notes.md
           gh release create "$TAG" dist/* --prerelease --target "$GITHUB_SHA" \
             --title "Development build ${GITHUB_SHA::7}" --notes-file notes.md

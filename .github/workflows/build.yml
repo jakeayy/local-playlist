@@ -1,0 +1,160 @@
+# Builds every download, each on its own platform's runner; called by dev.yml
+# and release.yml (not run on its own). Artifacts, named package-*:
+#
+#   local-playlist-<label>-{linux,windows}-x64            desktop app + login window
+#   local-playlist-<label>-{linux,windows}-x64-server     server, with the web UI
+#
+# The web UI (wasm) is built once and embedded into both servers.
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        description: Version label in the file names (e.g. 0.2.0 or dev-1a2b3c4)
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARYEN_VERSION: "133"
+
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.platform }})
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    env:
+      PACKAGE: local-playlist-${{ inputs.label }}-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libwebkit2gtk-4.1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/$PACKAGE"
+          cp target/release/local-playlist target/release/local-playlist-login README.md "dist/$PACKAGE/"
+          tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
+
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist/$env:PACKAGE" | Out-Null
+          Copy-Item target/release/local-playlist.exe, target/release/local-playlist-login.exe, README.md "dist/$env:PACKAGE/"
+          Compress-Archive -Path "dist/$env:PACKAGE" -DestinationPath "dist/$env:PACKAGE.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  web:
+    name: Web UI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # Nightly: GPUI's web backend uses unstable wasm-threading features.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen and wasm-opt
+        run: |
+          # wasm-bindgen's CLI must match the library version in Cargo.lock.
+          wb=$(grep -A1 'name = "wasm-bindgen"$' Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p')
+          curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$wb/wasm-bindgen-$wb-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/wasm-bindgen-$wb-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/version_$BINARYEN_VERSION/binaryen-version_$BINARYEN_VERSION-x86_64-linux.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_$BINARYEN_VERSION/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: ./scripts/build-web.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  server:
+    name: Server (${{ matrix.platform }})
+    needs: web
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    env:
+      PACKAGE: local-playlist-${{ inputs.label }}-${{ matrix.platform }}-server
+    steps:
+      - uses: actions/checkout@v7
+
+      # Embedded by build.rs when present.
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --no-default-features --features server
+
+      - name: Package
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/$PACKAGE"
+          cp target/release/local-playlist README.md "dist/$PACKAGE/"
+          tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
+
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "dist/$env:PACKAGE" | Out-Null
+          Copy-Item target/release/local-playlist.exe, README.md "dist/$env:PACKAGE/"
+          Compress-Archive -Path "dist/$env:PACKAGE" -DestinationPath "dist/$env:PACKAGE.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.platform }}-server
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
