@@ -1,0 +1,885 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Playlist – Private YouTube &amp; SoundCloud Music Player</title>
+<meta name="description" content="Free, open-source music player for YouTube, YouTube Music and SoundCloud links. Build playlists, listen offline, skip sponsors. No ads, no account, no tracking.">
+<link rel="canonical" href="https://jakeayy.github.io/local-playlist/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="author" content="jakeayy and Local Playlist contributors">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FEF7FF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141218" media="(prefers-color-scheme: dark)">
+
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="icon" href="img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
+<link rel="alternate" type="application/atom+xml" title="Local Playlist releases" href="https://github.com/jakeayy/local-playlist/releases.atom">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Local Playlist">
+<meta property="og:locale" content="en_GB">
+<meta property="og:url" content="https://jakeayy.github.io/local-playlist/">
+<meta property="og:title" content="Local Playlist – Private YouTube &amp; SoundCloud Music Player">
+<meta property="og:description" content="Paste YouTube, YouTube Music and SoundCloud links, build playlists that live on your computer, and listen offline. Free and open source. No ads, no account, no tracking.">
+<meta property="og:image" content="https://jakeayy.github.io/local-playlist/img/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Local Playlist: a playlist mixing YouTube and SoundCloud tracks in a dark theme">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Local Playlist – Private YouTube &amp; SoundCloud Music Player">
+<meta name="twitter:description" content="Free, open-source music player for YouTube and SoundCloud links. Listen offline. No ads, no account, no tracking.">
+<meta name="twitter:image" content="https://jakeayy.github.io/local-playlist/img/og-image.png">
+<meta name="twitter:image:alt" content="Local Playlist: a playlist mixing YouTube and SoundCloud tracks in a dark theme">
+
+<script>
+  // Apply a saved theme before the first paint (no flash). Storage can be blocked: ignore that.
+  try { var t = localStorage.getItem('lp-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<link rel="stylesheet" href="assets/site.css">
+<link rel="preload" as="image" href="img/icon.svg" type="image/svg+xml">
+
+<!-- Structured data. The FAQPage part must match the FAQ below: after editing the FAQ, run `python3 tools/faq-jsonld.py`. -->
+<script type="application/ld+json" id="ld-site">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://jakeayy.github.io/local-playlist/#website",
+      "url": "https://jakeayy.github.io/local-playlist/",
+      "name": "Local Playlist",
+      "inLanguage": "en"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://jakeayy.github.io/local-playlist/#app",
+      "name": "Local Playlist",
+      "description": "A privacy-friendly, local-first music player for links from YouTube, YouTube Music and SoundCloud. Build playlists that live on your computer and listen offline. No account, no ads, no tracking.",
+      "url": "https://jakeayy.github.io/local-playlist/",
+      "applicationCategory": "MultimediaApplication",
+      "applicationSubCategory": "Music player",
+      "operatingSystem": "Windows, Linux",
+      "downloadUrl": "https://github.com/jakeayy/local-playlist/releases/latest",
+      "isAccessibleForFree": true,
+      "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "image": "https://jakeayy.github.io/local-playlist/img/icon-512.png",
+      "screenshot": [
+        "https://jakeayy.github.io/local-playlist/img/screenshots/playlist-light.webp",
+        "https://jakeayy.github.io/local-playlist/img/screenshots/visualizer-dark.webp",
+        "https://jakeayy.github.io/local-playlist/img/screenshots/settings-light.webp"
+      ],
+      "featureList": [
+        "Play YouTube, YouTube Music and SoundCloud links in one playlist",
+        "Import YouTube playlists and SoundCloud sets, profiles and likes",
+        "Offline listening: tracks are saved as ordinary audio files",
+        "SponsorBlock skipping of non-music and sponsor segments",
+        "Music visualizer",
+        "Light and dark themes with colours from cover art",
+        "Optional login for private playlists and likes",
+        "Self-hosted web version with Docker"
+      ],
+      "author": { "@type": "Person", "name": "jakeayy", "url": "https://github.com/jakeayy" },
+      "sameAs": ["https://github.com/jakeayy/local-playlist"]
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://jakeayy.github.io/local-playlist/#source",
+      "name": "Local Playlist source code",
+      "codeRepository": "https://github.com/jakeayy/local-playlist",
+      "programmingLanguage": "Rust",
+      "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+      "targetProduct": { "@id": "https://jakeayy.github.io/local-playlist/#app" }
+    }
+  ]
+}
+</script>
+<script type="application/ld+json" id="ld-faq">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Is Local Playlist free?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. It's free and open-source software under the GNU GPL 3.0 (or later). There are no ads, no paid tier and no account."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Which systems does it run on?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The desktop app is available for 64-bit Windows and Linux. Linux builds need a recent distribution (glibc 2.39 or newer, for example Ubuntu 24.04, Debian 13 or Fedora 40), and logging in needs WebKitGTK 4.1. There's no macOS download at the moment. Phones, tablets and other computers can use the self-hosted web version in a browser."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I listen offline?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Every track you play is saved as an ordinary audio file (usually M4A) with its cover embedded, in your Music folder under local-playlist/<playlist name>/. It plays without internet, and in any other music player too. \"Download all\" saves a whole playlist at once."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Which links can I add?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "YouTube and YouTube Music tracks (youtube.com/watch?v=…, youtu.be/…, youtube.com/shorts/…, music.youtube.com/watch?v=…), public or unlisted YouTube playlists, and SoundCloud tracks, sets, albums, a profile's tracks, a profile's public likes and on.soundcloud.com short links. With a login, also private playlists, YouTube Liked videos, Liked music and Watch later, and your own SoundCloud likes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need a YouTube or SoundCloud account?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Public tracks and playlists work without logging in, and then no cookies are sent at all. A login is only needed for private playlists and your likes. It stays on your computer, encrypted, with the key in your system keyring, and Log out deletes it."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Local Playlist collect any data?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. There's no telemetry, analytics or tracking, and your library is a plain file on your computer. The app only connects to YouTube and SoundCloud, SponsorBlock (if turned on) and GitHub (to download its helpers). On systems without a ready-made yt-dlp build it also uses PyPI."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What does SponsorBlock do, and can I turn it off?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "SponsorBlock is a community database of segments in YouTube videos, such as sponsors, talking in music videos and \"like and subscribe\" reminders. Local Playlist jumps past the categories you pick; the saved files aren't cut. To keep what you play private, it only sends the first 4 characters of a hash of the video's id. You can change the categories or turn it off in Settings."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What are yt-dlp and QuickJS, and why does the app download them?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "yt-dlp is the open-source tool that downloads the audio, and QuickJS is a small JavaScript engine it needs for YouTube. On first start the app offers to download both (yt-dlp is checked against its published checksums), and Update bundled components in Settings gets their newest versions. You can also use your own copies from the system instead."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need ffmpeg?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Local Playlist turns downloads into plain M4A files and embeds the cover by itself. If ffmpeg is installed, it's used for that instead and can also convert the rare tracks without AAC or MP3 audio."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use it on my phone or another computer?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, with the self-hosted web version. Run it on a home server (with Docker, or the server download) and open it in any browser on your network. It's protected by a password and accepts only YouTube and SoundCloud links. Run it on a home connection, since YouTube often blocks servers in data centres, and put it behind HTTPS to use it from outside your network."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "A track or playlist stopped working. What can I do?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "YouTube and SoundCloud change things now and then. First use Update bundled components in Settings to get the newest yt-dlp. If it still fails, please open a \"site change\" issue on GitHub; there's a form for exactly that."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Where are my playlists stored, and how do I back them up?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Your library is a plain JSON file, library.json, in the app's data folder (on Linux ~/.local/share/local-playlist/; Settings shows the exact path). The music itself is in your Music folder. Copy both to back them up."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "I removed a track by mistake. Is it gone?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Removed tracks are kept in a cache (up to 2 GB by default; you can change the limit in Settings). Add the same link again and it's back instantly, without downloading it again."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Local Playlist affiliated with YouTube or SoundCloud?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. It's an independent open-source project, not affiliated with or endorsed by Google, YouTube or SoundCloud. Please respect artists' rights and the terms of the services you use."
+      }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<!-- Icons: Lucide (https://lucide.dev), ISC licence. -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+<symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
+<symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
+<symbol id="i-audio-lines" viewBox="0 0 24 24"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></symbol>
+<symbol id="i-book-open" viewBox="0 0 24 24"><path d="M12 5v16"/><path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"/></symbol>
+<symbol id="i-chart-column" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 9-5.5 5.5L8 12"/></symbol>
+<symbol id="i-circle-question-mark" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+<symbol id="i-cpu" viewBox="0 0 24 24"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></symbol>
+<symbol id="i-disc-3" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M6 12c0-1.7.7-3.2 1.8-4.2"/><circle cx="12" cy="12" r="2"/><path d="M18 12c0 1.7-.7 3.2-1.8 4.2"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></symbol>
+<symbol id="i-hard-drive" viewBox="0 0 24 24"><path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/></symbol>
+<symbol id="i-hard-drive-download" viewBox="0 0 24 24"><path d="M12 2v8"/><path d="m16 6-4 4-4-4"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 18h.01"/><path d="M10 18h.01"/></symbol>
+<symbol id="i-heart" viewBox="0 0 24 24"><path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/></symbol>
+<symbol id="i-import" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+<symbol id="i-list-music" viewBox="0 0 24 24"><path d="M16 5H3"/><path d="M11 12H3"/><path d="M11 19H3"/><path d="M21 16V5"/><circle cx="18" cy="16" r="3"/></symbol>
+<symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+<symbol id="i-log-in" viewBox="0 0 24 24"><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></symbol>
+<symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></symbol>
+<symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+<symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
+<symbol id="i-repeat-1" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11 10h1v4"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+<symbol id="i-server" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+<symbol id="i-shuffle" viewBox="0 0 24 24"><path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22"/><path d="M2 6h1.972a4 4 0 0 1 3.6 2.2"/><path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45"/></symbol>
+<symbol id="i-skip-back" viewBox="0 0 24 24"><path d="M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"/><path d="M3 20V4"/></symbol>
+<symbol id="i-skip-forward" viewBox="0 0 24 24"><path d="M21 4v16"/><path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"/></symbol>
+<symbol id="i-square-terminal" viewBox="0 0 24 24"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></symbol>
+<symbol id="i-star" viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+<symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+<symbol id="i-undo-2" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+<symbol id="i-volume-2" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></symbol>
+<symbol id="i-volume-x" viewBox="0 0 24 24"><path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"/><path d="m16.5 14.5 5-5"/><path d="m16.5 9.5 5 5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+</svg>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top" id="top">
+  <div class="wrap top-in">
+    <a class="brand" href="./" aria-label="Local Playlist home">
+      <img src="img/icon.svg" width="32" height="32" alt="">
+      <span>Local Playlist</span>
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#demo">Demo</a>
+      <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#faq">FAQ</a>
+      <a href="#contributors">Contributors</a>
+    </nav>
+    <div class="top-actions">
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Theme: system">
+        <svg class="i" aria-hidden="true"><use href="#i-monitor"></use></svg>
+      </button>
+      <a class="icon-btn top-github" href="https://github.com/jakeayy/local-playlist" aria-label="Source code on GitHub">
+        <svg class="i" aria-hidden="true"><use href="#i-github"></use></svg>
+      </a>
+      <a class="btn btn-tonal btn-sm" href="#download">Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="sky" aria-hidden="true"></div>
+    <div class="wrap hero-in">
+      <p class="eyebrow"><svg class="i" aria-hidden="true"><use href="#i-heart"></use></svg> Free and open source · Windows and Linux</p>
+      <h1 id="hero-title">
+        <span class="h1-brand">Local Playlist</span>
+        <span class="h1-tag">Your YouTube and SoundCloud music, private and offline</span>
+      </h1>
+      <p class="lede">
+        A music player for links from <strong>YouTube</strong>, <strong>YouTube Music</strong> and
+        <strong>SoundCloud</strong>. Paste links, build playlists that live on your computer, and listen
+        to them in the app, also offline. No account, no ads, no tracking.
+      </p>
+      <div class="cta">
+        <a class="btn btn-filled btn-lg" id="cta-download" href="https://github.com/jakeayy/local-playlist/releases/latest">
+          <svg class="i" aria-hidden="true"><use href="#i-download"></use></svg>
+          <span id="cta-label">Download</span>
+        </a>
+        <a class="btn btn-outline btn-lg" href="#demo">
+          <svg class="i" aria-hidden="true"><use href="#i-play"></use></svg>
+          Try the demo
+        </a>
+      </div>
+      <p class="cta-note" id="cta-note">Windows and Linux, 64-bit. Or <a href="#self-host">host the web version</a> for any browser.</p>
+    </div>
+  </section>
+
+  <!-- Interactive demo -->
+  <section class="section demo-section" id="demo" aria-labelledby="demo-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="demo-title">Try it in your browser</h2>
+        <p>A clickable preview of the app with placeholder tracks. No audio plays and nothing you type leaves this page.</p>
+      </div>
+
+      <div class="demo-layout">
+        <!-- PLACEHOLDER: the demo is a hand-made HTML mock of the app, filled by assets/demo.js. -->
+        <div class="demo" id="lp-demo" role="region" aria-label="Interactive preview of Local Playlist" data-view="list" data-dtheme="system">
+          <div class="d-chrome" aria-hidden="true">
+            <span class="d-dot"></span><span class="d-dot"></span><span class="d-dot"></span>
+            <span class="d-chrome-title">Local Playlist</span>
+            <span class="d-chrome-tag">Demo · placeholder data</span>
+          </div>
+          <div class="d-body">
+            <aside class="d-side" aria-label="Playlists">
+              <div class="d-brand">
+                <svg class="i" aria-hidden="true"><use href="#i-disc-3"></use></svg>
+                <span>Local Playlist</span>
+                <button class="d-icon" type="button" data-act="new-playlist" aria-label="New playlist" title="New playlist">
+                  <svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>
+                </button>
+              </div>
+              <nav class="d-lists" id="d-lists" aria-label="Your playlists"></nav>
+              <div class="d-import">
+                <label class="d-label" for="d-import-input">Import playlist</label>
+                <input class="d-input" id="d-import-input" type="url" placeholder="Playlist, set or likes URL" autocomplete="off" spellcheck="false">
+                <button class="d-btn" type="button" data-act="import">
+                  <svg class="i" aria-hidden="true"><use href="#i-import"></use></svg> Import as new playlist
+                </button>
+                <p class="d-hint">YouTube playlists, SoundCloud sets, profiles and /likes. Private lists need a login (Settings).</p>
+              </div>
+              <div class="d-foot">
+                <span class="d-version">yt-dlp · demo build</span>
+                <button class="d-btn" type="button" data-act="settings" id="d-settings-btn">
+                  <svg class="i" aria-hidden="true"><use href="#i-settings"></use></svg> Settings &amp; accounts
+                </button>
+              </div>
+            </aside>
+
+            <div class="d-main">
+              <!-- Track list -->
+              <div class="d-view d-view-list" id="d-view-list">
+                <div class="d-head">
+                  <div class="d-mobile-lists" id="d-mobile-lists" role="group" aria-label="Your playlists"></div>
+                  <div class="d-title-row">
+                    <h3 class="d-title" id="d-title">Playlist</h3>
+                    <div class="d-title-actions">
+                      <button class="d-pill" type="button" data-act="play-all">
+                        <svg class="i" aria-hidden="true"><use href="#i-play"></use></svg> Play
+                      </button>
+                      <button class="d-icon" type="button" data-act="download-all" aria-label="Download all" title="Download all">
+                        <svg class="i" aria-hidden="true"><use href="#i-hard-drive-download"></use></svg>
+                      </button>
+                      <button class="d-icon" type="button" data-act="delete-playlist" aria-label="Delete playlist" title="Delete playlist">
+                        <svg class="i" aria-hidden="true"><use href="#i-trash"></use></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="d-meta-row">
+                    <span class="d-meta" id="d-meta"></span>
+                    <label class="d-search">
+                      <svg class="i" aria-hidden="true"><use href="#i-search"></use></svg>
+                      <input id="d-search" type="search" placeholder="Search title or artist" aria-label="Search title or artist" autocomplete="off">
+                    </label>
+                  </div>
+                  <form class="d-add" id="d-add-form" novalidate>
+                    <label class="d-link">
+                      <svg class="i" aria-hidden="true"><use href="#i-link"></use></svg>
+                      <input id="d-add-input" type="url" placeholder="Paste a YouTube / SoundCloud track or playlist link…" aria-label="YouTube or SoundCloud link" autocomplete="off" spellcheck="false">
+                    </label>
+                    <button class="d-btn d-add-btn" type="submit" id="d-add-btn">
+                      <svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg> Add
+                    </button>
+                  </form>
+                  <p class="d-error" id="d-add-error" role="alert" hidden></p>
+                </div>
+                <ol class="d-tracks" id="d-tracks" aria-label="Tracks"></ol>
+                <p class="d-empty" id="d-empty" hidden></p>
+              </div>
+
+              <!-- Visualizer -->
+              <div class="d-view d-view-viz" id="d-view-viz" hidden>
+                <canvas class="d-canvas" id="d-canvas" aria-hidden="true"></canvas>
+                <div class="d-viz-head">
+                  <div>
+                    <p class="d-viz-title" id="d-viz-title">Nothing playing</p>
+                    <p class="d-viz-artist" id="d-viz-artist">Pick a track to see it move</p>
+                  </div>
+                  <div class="d-viz-modes" role="group" aria-label="Visualizer style">
+                    <button class="d-icon" type="button" data-act="viz-mode" data-mode="circle" aria-pressed="true" aria-label="Circle" title="Circle">
+                      <svg class="i" aria-hidden="true"><use href="#i-disc-3"></use></svg>
+                    </button>
+                    <button class="d-icon" type="button" data-act="viz-mode" data-mode="bars" aria-pressed="false" aria-label="Bars" title="Bars">
+                      <svg class="i" aria-hidden="true"><use href="#i-chart-column"></use></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Settings -->
+              <div class="d-view d-view-settings" id="d-view-settings" hidden>
+                <div class="d-settings">
+                  <div class="d-title-row">
+                    <h3 class="d-title">Settings</h3>
+                    <button class="d-icon" type="button" data-act="close-settings" aria-label="Close settings">
+                      <svg class="i" aria-hidden="true"><use href="#i-x"></use></svg>
+                    </button>
+                  </div>
+
+                  <h4>Appearance</h4>
+                  <p class="d-sub">Material-style light and dark themes. (In this demo they change only the preview.)</p>
+                  <div class="d-seg" role="radiogroup" aria-label="Theme" id="d-theme-seg">
+                    <button type="button" role="radio" data-act="dtheme" data-val="system" aria-checked="true"><svg class="i" aria-hidden="true"><use href="#i-monitor"></use></svg> System</button>
+                    <button type="button" role="radio" data-act="dtheme" data-val="light" aria-checked="false"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg> Light</button>
+                    <button type="button" role="radio" data-act="dtheme" data-val="dark" aria-checked="false"><svg class="i" aria-hidden="true"><use href="#i-moon"></use></svg> Dark</button>
+                  </div>
+                  <div class="d-setting">
+                    <div>
+                      <p class="d-setting-name" id="d-cover-label">Colours from cover art</p>
+                      <p class="d-sub">Tint the accent colour with the dominant colour of the playing track's cover.</p>
+                    </div>
+                    <button class="d-switch" type="button" role="switch" aria-checked="true" aria-labelledby="d-cover-label" data-act="cover-colours"><span></span></button>
+                  </div>
+
+                  <h4>SponsorBlock</h4>
+                  <p class="d-sub">Skip parts of YouTube tracks marked by the SponsorBlock community. Files aren't cut; playback jumps past the segments.</p>
+                  <fieldset class="d-checks" id="d-sb">
+                    <legend class="visually-hidden">Segments to skip</legend>
+                  </fieldset>
+
+                  <h4>Accounts</h4>
+                  <p class="d-sub">Optional, for private playlists and likes. In the app, logging in opens a small login window; your session stays on your computer, encrypted.</p>
+                  <div class="d-accounts">
+                    <div class="d-account"><span class="d-badge yt">YouTube</span><span class="d-sub">Not logged in</span><button class="d-btn" type="button" data-act="login"><svg class="i" aria-hidden="true"><use href="#i-log-in"></use></svg> Log in</button></div>
+                    <div class="d-account"><span class="d-badge sc">SoundCloud</span><span class="d-sub">Not logged in</span><button class="d-btn" type="button" data-act="login"><svg class="i" aria-hidden="true"><use href="#i-log-in"></use></svg> Log in</button></div>
+                  </div>
+
+                  <h4>Storage</h4>
+                  <p class="d-sub">Music folder: <code>~/Music/local-playlist</code> · Removed tracks are kept up to <strong>2 GB</strong>.</p>
+                </div>
+              </div>
+
+              <div class="d-toast" id="d-toast" role="status" aria-live="polite" hidden>
+                <span id="d-toast-text"></span>
+                <button type="button" class="d-toast-action" id="d-toast-action" hidden>Add it back</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Player bar -->
+          <div class="d-player" aria-label="Player">
+            <div class="d-now">
+              <span class="d-cover d-cover-lg" id="d-now-cover" aria-hidden="true"></span>
+              <div class="d-now-text">
+                <p class="d-now-title" id="d-now-title">Nothing playing</p>
+                <p class="d-now-sub" id="d-now-sub">Click a track to start</p>
+              </div>
+            </div>
+            <div class="d-transport">
+              <div class="d-buttons">
+                <button class="d-icon" type="button" data-act="shuffle" aria-pressed="false" aria-label="Shuffle" title="Shuffle"><svg class="i" aria-hidden="true"><use href="#i-shuffle"></use></svg></button>
+                <button class="d-icon" type="button" data-act="prev" aria-label="Previous" title="Previous"><svg class="i" aria-hidden="true"><use href="#i-skip-back"></use></svg></button>
+                <button class="d-play" type="button" data-act="toggle" id="d-play" aria-label="Play"><svg class="i" aria-hidden="true"><use href="#i-play"></use></svg></button>
+                <button class="d-icon" type="button" data-act="next" aria-label="Next" title="Next"><svg class="i" aria-hidden="true"><use href="#i-skip-forward"></use></svg></button>
+                <button class="d-icon" type="button" data-act="repeat" aria-pressed="false" aria-label="Repeat: off" title="Repeat" id="d-repeat"><svg class="i" aria-hidden="true"><use href="#i-repeat"></use></svg></button>
+              </div>
+              <div class="d-seek">
+                <span class="d-time" id="d-pos">0:00</span>
+                <div class="d-range-wrap">
+                  <div class="d-segs" id="d-segs" aria-hidden="true"></div>
+                  <input class="d-range" id="d-seek" type="range" min="0" max="100" step="1" value="0" aria-label="Seek" disabled>
+                </div>
+                <span class="d-time" id="d-dur">0:00</span>
+              </div>
+            </div>
+            <div class="d-side-ctl">
+              <button class="d-icon" type="button" data-act="viz" aria-pressed="false" aria-label="Visualizer" title="Visualizer" id="d-viz-btn"><svg class="i" aria-hidden="true"><use href="#i-audio-lines"></use></svg></button>
+              <button class="d-icon" type="button" data-act="mute" aria-label="Mute" title="Mute" id="d-mute"><svg class="i" aria-hidden="true"><use href="#i-volume-2"></use></svg></button>
+              <input class="d-range d-volume" id="d-volume" type="range" min="0" max="100" value="70" aria-label="Volume">
+            </div>
+          </div>
+          <noscript><p class="d-noscript">The interactive preview needs JavaScript. The screenshots below show the real app.</p></noscript>
+        </div>
+
+        <!-- Interaction suggestions -->
+        <aside class="try" aria-labelledby="try-title">
+          <h3 id="try-title">Things to try</h3>
+          <p class="try-progress"><span id="try-count">0</span> of <span id="try-total">6</span> tried</p>
+          <div class="try-bar" aria-hidden="true"><span id="try-bar"></span></div>
+          <ol class="try-list">
+            <li data-goal="play"><button type="button" data-try="play"><svg class="i" aria-hidden="true"><use href="#i-play"></use></svg><span><b>Play a track</b><small>Click any track in the list.</small></span></button></li>
+            <li data-goal="skip"><button type="button" data-try="skip"><svg class="i" aria-hidden="true"><use href="#i-skip-forward"></use></svg><span><b>Watch SponsorBlock skip</b><small>The first track's talking intro is skipped for you.</small></span></button></li>
+            <li data-goal="add"><button type="button" data-try="add"><svg class="i" aria-hidden="true"><use href="#i-link"></use></svg><span><b>Paste a link</b><small>We'll fill in a sample. Real titles are looked up by the app.</small></span></button></li>
+            <li data-goal="viz"><button type="button" data-try="viz"><svg class="i" aria-hidden="true"><use href="#i-audio-lines"></use></svg><span><b>Open the visualizer</b><small>The wave button in the player bar. Try both styles.</small></span></button></li>
+            <li data-goal="theme"><button type="button" data-try="theme"><svg class="i" aria-hidden="true"><use href="#i-palette"></use></svg><span><b>Change the theme</b><small>Settings → Appearance. Colours follow the cover.</small></span></button></li>
+            <li data-goal="undo"><button type="button" data-try="undo"><svg class="i" aria-hidden="true"><use href="#i-undo-2"></use></svg><span><b>Remove, then add it back</b><small>Removed tracks wait in a cache, so re-adding one is instant.</small></span></button></li>
+          </ol>
+          <p class="try-done" id="try-done" hidden>
+            That's everything. <a href="#download">Get the real app</a>: it does all this with your own music.
+          </p>
+          <p class="try-note">Track names, covers and timings here are placeholders.</p>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section" id="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="features-title">One player for YouTube, YouTube Music and SoundCloud</h2>
+        <p>Paste a link from any of them. Your playlists live on your computer, not in an account.</p>
+      </div>
+      <ul class="features">
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-list-music"></use></svg></span>
+          <h3>One playlist for everything</h3>
+          <p>YouTube, YouTube Music and SoundCloud tracks side by side. Just paste a link.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-import"></use></svg></span>
+          <h3>Import whole playlists</h3>
+          <p>From YouTube and YouTube Music, and SoundCloud sets, profiles and likes. Public ones don't need a login.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-play"></use></svg></span>
+          <h3>Starts playing right away</h3>
+          <p>Music plays while the track is still downloading, and the next one is ready before the current one ends.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-hard-drive"></use></svg></span>
+          <h3>Your music, offline</h3>
+          <p>Every track is saved as an ordinary audio file, cover included, in your Music folder. It plays without internet and in any other player. "Download all" saves a whole playlist.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-skip-forward"></use></svg></span>
+          <h3>Skips the boring parts</h3>
+          <p>With <a href="https://sponsor.ajay.app/">SponsorBlock</a>, talking, sponsors and "like and subscribe" reminders in YouTube videos are skipped. You choose what to skip, or turn it off.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-audio-lines"></use></svg></span>
+          <h3>Visualizer</h3>
+          <p>Bars, or a circle over a night sky with an aurora, moving with the music.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-palette"></use></svg></span>
+          <h3>Light and dark themes</h3>
+          <p>Material-style themes that take their accent colour from the cover of what's playing.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-undo-2"></use></svg></span>
+          <h3>Removed by mistake?</h3>
+          <p>Removed tracks are kept for a while (up to 2 GB), so adding one back is instant.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-log-in"></use></svg></span>
+          <h3>Optional login</h3>
+          <p>For private playlists, YouTube <em>Liked videos</em>, <em>Liked music</em> and <em>Watch later</em>, and your SoundCloud likes.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-download"></use></svg></span>
+          <h3>Nothing else to install</h3>
+          <p>On first start the app offers to download the two helpers it needs, yt-dlp and QuickJS. yt-dlp is checked against its published checksums.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-server"></use></svg></span>
+          <h3>Web version for your home server</h3>
+          <p>Run it with Docker and listen from any browser on your network, phones included.</p>
+        </li>
+        <li class="feature">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-cpu"></use></svg></span>
+          <h3>Light on your computer</h3>
+          <p>A native Rust app with a GPU-drawn interface. It doesn't run a browser engine: the login window is a separate program, started only when you log in.</p>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Screenshots -->
+  <section class="section section-alt" id="screenshots" aria-labelledby="screenshots-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="screenshots-title">Screenshots</h2>
+        <p>The real app on Linux. Screenshots follow this page's theme.</p>
+      </div>
+      <div class="shots">
+        <figure class="shot shot-wide">
+          <img class="for-light" src="img/screenshots/playlist-light.webp" width="1120" height="740" loading="lazy" decoding="async" alt="Local Playlist: a playlist mixing YouTube and SoundCloud tracks, one of them playing, in the light theme">
+          <img class="for-dark" src="img/screenshots/playlist-dark.webp" width="1120" height="740" loading="lazy" decoding="async" alt="Local Playlist: a playlist mixing YouTube and SoundCloud tracks, one of them playing; the theme takes its accent colour from the cover">
+          <figcaption>Playlists mix YouTube and SoundCloud. Ticks mark tracks already saved for offline listening.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img class="for-light" src="img/screenshots/visualizer-light.webp" width="1120" height="740" loading="lazy" decoding="async" alt="The circle visualizer over a night sky with an aurora and mountain ridges, light theme">
+          <img class="for-dark" src="img/screenshots/visualizer-dark.webp" width="1120" height="740" loading="lazy" decoding="async" alt="The circle visualizer over a night sky with an aurora and mountain ridges">
+          <figcaption>The circle visualizer.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img class="for-light" src="img/screenshots/settings-light.webp" width="1120" height="740" loading="lazy" decoding="async" alt="Settings: appearance, colours from cover art, and SponsorBlock categories">
+          <img class="for-dark" src="img/screenshots/settings-dark.webp" width="1120" height="740" loading="lazy" decoding="async" alt="Settings in the dark theme: appearance, colours from cover art, and SponsorBlock categories">
+          <figcaption>Settings: themes, cover colours and SponsorBlock.</figcaption>
+        </figure>
+      </div>
+      <p class="credit">Music in the screenshots: releases by <a href="https://ncs.io">NoCopyrightSounds</a>.</p>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="section" id="how-it-works" aria-labelledby="how-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="how-title">How it works</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <span class="step-n" aria-hidden="true">1</span>
+          <h3>Paste a link</h3>
+          <p>A track, a playlist, a SoundCloud set or someone's likes. The app looks it up through the platform's public web endpoints, the same ones its website uses for logged-out visitors.</p>
+        </li>
+        <li>
+          <span class="step-n" aria-hidden="true">2</span>
+          <h3>Press play</h3>
+          <p>Playback starts while <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> downloads the audio, and the next track is fetched before the current one ends.</p>
+        </li>
+        <li>
+          <span class="step-n" aria-hidden="true">3</span>
+          <h3>Keep it</h3>
+          <p>The file stays in <code>Music/local-playlist/&lt;playlist&gt;/</code> with its cover embedded. Next time it plays from disk, online or not.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- Privacy -->
+  <section class="section section-alt" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap privacy">
+      <div>
+        <h2 id="privacy-title">Private by design</h2>
+        <p class="privacy-lede">Your playlists are a file on your computer. There's nothing to sign up for and nobody to sell your listening habits to.</p>
+        <a class="btn btn-outline" href="https://github.com/jakeayy/local-playlist#privacy">
+          <svg class="i" aria-hidden="true"><use href="#i-book-open"></use></svg> Technical details
+        </a>
+      </div>
+      <ul class="checks">
+        <li><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg><span><strong>Nothing is collected.</strong> No accounts, ads, analytics or tracking.</span></li>
+        <li><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg><span><strong>It only talks to</strong> YouTube and SoundCloud (to look up and download tracks), SponsorBlock (if turned on), and GitHub (to download yt-dlp and QuickJS).</span></li>
+        <li><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg><span><strong>SponsorBlock isn't told what you play:</strong> the app asks about a group of many videos at once and picks out the right one itself.</span></li>
+        <li><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg><span><strong>Logging in is optional.</strong> Without it, no cookies are sent. If you do log in, the session stays on your computer, encrypted, with the key in your system keyring.</span></li>
+        <li><svg class="i" aria-hidden="true"><use href="#i-circle-check"></use></svg><span><strong>Open source.</strong> Every line is on GitHub under the GPL-3.0 licence, so anyone can check these claims.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Download -->
+  <section class="section" id="download" aria-labelledby="download-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="download-title">Download Local Playlist</h2>
+        <p>Free, for 64-bit Windows and Linux. <span id="release-line">Every build is on the <a href="https://github.com/jakeayy/local-playlist/releases">Releases page</a>.</span></p>
+      </div>
+      <div class="downloads">
+        <article class="dl" data-os="windows">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-monitor"></use></svg></span>
+          <h3>Windows</h3>
+          <p>Download the <code>…-windows-x64.zip</code>, unzip it, and run <code>local-playlist.exe</code>.</p>
+          <a class="btn btn-filled" data-asset="windows-x64.zip" href="https://github.com/jakeayy/local-playlist/releases/latest">
+            <svg class="i" aria-hidden="true"><use href="#i-download"></use></svg> <span>Download for Windows</span>
+          </a>
+          <p class="dl-meta" data-meta="windows-x64.zip"></p>
+        </article>
+        <article class="dl" data-os="linux">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-square-terminal"></use></svg></span>
+          <h3>Linux</h3>
+          <p>Download the <code>…-linux-x64.tar.gz</code>, extract it, and run <code>local-playlist</code>. Needs a recent distribution: Ubuntu 24.04, Debian 13, Fedora 40 or newer. Logging in also needs WebKitGTK 4.1.</p>
+          <a class="btn btn-filled" data-asset="linux-x64.tar.gz" href="https://github.com/jakeayy/local-playlist/releases/latest">
+            <svg class="i" aria-hidden="true"><use href="#i-download"></use></svg> <span>Download for Linux</span>
+          </a>
+          <p class="dl-meta" data-meta="linux-x64.tar.gz"></p>
+        </article>
+        <article class="dl" id="self-host" data-os="server">
+          <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-server"></use></svg></span>
+          <h3>Web version (self-hosted)</h3>
+          <p>Run it on a home server and open it from any browser on your network. Playlists stay in each browser; the server only looks up links and streams the audio.</p>
+          <div class="code">
+            <pre><code id="docker-cmd">docker run -d --name local-playlist -p 8080:8080 -v lp-data:/data \
+  -e LOCAL_PLAYLIST_PASSWORD='a long password' \
+  ghcr.io/jakeayy/local-playlist:latest</code></pre>
+            <button class="icon-btn copy" type="button" data-copy="docker-cmd" aria-label="Copy the Docker command">
+              <svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>
+            </button>
+          </div>
+          <p class="dl-meta">Then open <code>http://&lt;server&gt;:8080</code>. Logins, private playlists and offline folders are desktop-only. <a href="https://github.com/jakeayy/local-playlist#web-version-self-hosted">Server guide</a></p>
+        </article>
+      </div>
+      <p class="dl-foot">
+        Keep <code>local-playlist-login</code> next to the app: it's the window you log in with.
+        Pre-releases contain the newest changes and may be less stable.
+        Want to build it yourself? See <a href="https://github.com/jakeayy/local-playlist/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.
+      </p>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="section section-alt" id="faq" aria-labelledby="faq-title">
+    <div class="wrap faq-wrap">
+      <div class="section-head">
+        <h2 id="faq-title">Frequently asked questions</h2>
+        <p>Something not covered? Ask in <a href="https://github.com/jakeayy/local-playlist/discussions">Discussions</a>.</p>
+      </div>
+      <div class="faq" id="faq-list">
+        <details id="faq-is-local-playlist-free">
+          <summary>Is Local Playlist free?</summary>
+          <div class="answer"><p>Yes. It's free and open-source software under the GNU GPL 3.0 (or later). There are no ads, no paid tier and no account.</p></div>
+        </details>
+        <details id="faq-which-systems-does-it-run-on">
+          <summary>Which systems does it run on?</summary>
+          <div class="answer"><p>The desktop app is available for 64-bit Windows and Linux. Linux builds need a recent distribution (glibc 2.39 or newer, for example Ubuntu 24.04, Debian 13 or Fedora 40), and logging in needs WebKitGTK 4.1. There's no macOS download at the moment. Phones, tablets and other computers can use the self-hosted web version in a browser.</p></div>
+        </details>
+        <details id="faq-can-i-listen-offline">
+          <summary>Can I listen offline?</summary>
+          <div class="answer"><p>Yes. Every track you play is saved as an ordinary audio file (usually M4A) with its cover embedded, in your Music folder under <code>local-playlist/&lt;playlist name&gt;/</code>. It plays without internet, and in any other music player too. "Download all" saves a whole playlist at once.</p></div>
+        </details>
+        <details id="faq-which-links-can-i-add">
+          <summary>Which links can I add?</summary>
+          <div class="answer"><p>YouTube and YouTube Music tracks (<code>youtube.com/watch?v=…</code>, <code>youtu.be/…</code>, <code>youtube.com/shorts/…</code>, <code>music.youtube.com/watch?v=…</code>), public or unlisted YouTube playlists, and SoundCloud tracks, sets, albums, a profile's tracks, a profile's public likes and <code>on.soundcloud.com</code> short links. With a login, also private playlists, YouTube Liked videos, Liked music and Watch later, and your own SoundCloud likes.</p></div>
+        </details>
+        <details id="faq-do-i-need-a-youtube-or-soundcloud-account">
+          <summary>Do I need a YouTube or SoundCloud account?</summary>
+          <div class="answer"><p>No. Public tracks and playlists work without logging in, and then no cookies are sent at all. A login is only needed for private playlists and your likes. It stays on your computer, encrypted, with the key in your system keyring, and Log out deletes it.</p></div>
+        </details>
+        <details id="faq-does-local-playlist-collect-any-data">
+          <summary>Does Local Playlist collect any data?</summary>
+          <div class="answer"><p>No. There's no telemetry, analytics or tracking, and your library is a plain file on your computer. The app only connects to YouTube and SoundCloud, SponsorBlock (if turned on) and GitHub (to download its helpers). On systems without a ready-made yt-dlp build it also uses PyPI.</p></div>
+        </details>
+        <details id="faq-what-does-sponsorblock-do-and-can-i-turn-it-off">
+          <summary>What does SponsorBlock do, and can I turn it off?</summary>
+          <div class="answer"><p>SponsorBlock is a community database of segments in YouTube videos, such as sponsors, talking in music videos and "like and subscribe" reminders. Local Playlist jumps past the categories you pick; the saved files aren't cut. To keep what you play private, it only sends the first 4 characters of a hash of the video's id. You can change the categories or turn it off in Settings.</p></div>
+        </details>
+        <details id="faq-what-are-yt-dlp-and-quickjs-and-why-does-the">
+          <summary>What are yt-dlp and QuickJS, and why does the app download them?</summary>
+          <div class="answer"><p>yt-dlp is the open-source tool that downloads the audio, and QuickJS is a small JavaScript engine it needs for YouTube. On first start the app offers to download both (yt-dlp is checked against its published checksums), and Update bundled components in Settings gets their newest versions. You can also use your own copies from the system instead.</p></div>
+        </details>
+        <details id="faq-do-i-need-ffmpeg">
+          <summary>Do I need ffmpeg?</summary>
+          <div class="answer"><p>No. Local Playlist turns downloads into plain M4A files and embeds the cover by itself. If ffmpeg is installed, it's used for that instead and can also convert the rare tracks without AAC or MP3 audio.</p></div>
+        </details>
+        <details id="faq-can-i-use-it-on-my-phone-or-another-computer">
+          <summary>Can I use it on my phone or another computer?</summary>
+          <div class="answer"><p>Yes, with the self-hosted web version. Run it on a home server (with Docker, or the server download) and open it in any browser on your network. It's protected by a password and accepts only YouTube and SoundCloud links. Run it on a home connection, since YouTube often blocks servers in data centres, and put it behind HTTPS to use it from outside your network.</p></div>
+        </details>
+        <details id="faq-a-track-or-playlist-stopped-working-what-can-i">
+          <summary>A track or playlist stopped working. What can I do?</summary>
+          <div class="answer"><p>YouTube and SoundCloud change things now and then. First use Update bundled components in Settings to get the newest yt-dlp. If it still fails, please open a "site change" issue on GitHub; there's a form for exactly that.</p></div>
+        </details>
+        <details id="faq-where-are-my-playlists-stored-and-how-do-i-back">
+          <summary>Where are my playlists stored, and how do I back them up?</summary>
+          <div class="answer"><p>Your library is a plain JSON file, <code>library.json</code>, in the app's data folder (on Linux <code>~/.local/share/local-playlist/</code>; Settings shows the exact path). The music itself is in your Music folder. Copy both to back them up.</p></div>
+        </details>
+        <details id="faq-i-removed-a-track-by-mistake-is-it-gone">
+          <summary>I removed a track by mistake. Is it gone?</summary>
+          <div class="answer"><p>No. Removed tracks are kept in a cache (up to 2 GB by default; you can change the limit in Settings). Add the same link again and it's back instantly, without downloading it again.</p></div>
+        </details>
+        <details id="faq-is-local-playlist-affiliated-with-youtube-or">
+          <summary>Is Local Playlist affiliated with YouTube or SoundCloud?</summary>
+          <div class="answer"><p>No. It's an independent open-source project, not affiliated with or endorsed by Google, YouTube or SoundCloud. Please respect artists' rights and the terms of the services you use.</p></div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Contributors -->
+  <section class="section" id="contributors" aria-labelledby="contributors-title">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="contributors-title">Contributors</h2>
+        <p>Local Playlist is made by people in their spare time. Thank you to everyone who has helped.</p>
+      </div>
+
+      <ul class="people" id="people">
+        <li class="person">
+          <a href="https://github.com/jakeayy">
+            <img src="https://avatars.githubusercontent.com/u/47297843?v=4&amp;s=128" width="64" height="64" loading="lazy" decoding="async" alt="">
+            <span class="person-name">jakeayy</span>
+            <span class="person-role">Creator and maintainer</span>
+          </a>
+        </li>
+      </ul>
+      <p class="people-more"><a href="https://github.com/jakeayy/local-playlist/graphs/contributors">All contributors on GitHub</a></p>
+
+      <div class="involve">
+        <h3>Get involved</h3>
+        <ul class="involve-grid">
+          <li><a class="involve-card" href="https://github.com/jakeayy/local-playlist">
+            <svg class="i" aria-hidden="true"><use href="#i-star"></use></svg>
+            <span><b>Star it on GitHub</b><small>It helps other people find the project.</small></span></a></li>
+          <li><a class="involve-card" href="https://github.com/jakeayy/local-playlist/issues/new?template=site_change.yml">
+            <svg class="i" aria-hidden="true"><use href="#i-triangle-alert"></use></svg>
+            <span><b>Report a broken link</b><small>YouTube or SoundCloud changed something? Tell us.</small></span></a></li>
+          <li><a class="involve-card" href="https://github.com/jakeayy/local-playlist/issues/new?template=feature_request.yml">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-question-mark"></use></svg>
+            <span><b>Suggest a feature</b><small>Ideas and wishes go through the feature form.</small></span></a></li>
+          <li><a class="involve-card" href="https://github.com/jakeayy/local-playlist/discussions">
+            <svg class="i" aria-hidden="true"><use href="#i-users"></use></svg>
+            <span><b>Join the discussion</b><small>Questions, tips and plans.</small></span></a></li>
+          <li><a class="involve-card" href="https://github.com/jakeayy/local-playlist/blob/main/CONTRIBUTING.md">
+            <svg class="i" aria-hidden="true"><use href="#i-github"></use></svg>
+            <span><b>Contribute code</b><small>Rust and GPUI. The guide shows how to build and test.</small></span></a></li>
+          <li><a class="involve-card" href="https://github.com/jakeayy/local-playlist/security/advisories/new">
+            <svg class="i" aria-hidden="true"><use href="#i-shield"></use></svg>
+            <span><b>Report a security issue</b><small>Privately, please. See SECURITY.md.</small></span></a></li>
+        </ul>
+      </div>
+
+      <div class="thanks">
+        <h3>Built on</h3>
+        <ul class="thanks-list">
+          <li><a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a></li>
+          <li><a href="https://github.com/quickjs-ng/quickjs">QuickJS-ng</a></li>
+          <li><a href="https://sponsor.ajay.app/">SponsorBlock</a></li>
+          <li><a href="https://gpui-kit.com">GPUI Kit</a></li>
+          <li><a href="https://github.com/RustAudio/rodio">rodio</a> and Symphonia</li>
+          <li><a href="https://lucide.dev">Lucide</a> icons</li>
+          <li><a href="https://fonts.google.com/noto">Noto Sans</a></li>
+          <li><a href="https://m3.material.io">Material 3</a> colours</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section closing" aria-labelledby="closing-title">
+    <div class="wrap closing-in">
+      <img src="img/icon.svg" width="72" height="72" alt="" loading="lazy">
+      <h2 id="closing-title">Your music, on your computer</h2>
+      <p>Free, open source, and yours to keep.</p>
+      <div class="cta">
+        <a class="btn btn-filled btn-lg" href="#download"><svg class="i" aria-hidden="true"><use href="#i-download"></use></svg> Download</a>
+        <a class="btn btn-outline btn-lg" href="https://github.com/jakeayy/local-playlist"><svg class="i" aria-hidden="true"><use href="#i-github"></use></svg> View on GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <p>Copyright © 2026 jakeayy and Local Playlist contributors. Local Playlist is free software under the
+      <a href="https://github.com/jakeayy/local-playlist/blob/main/LICENSE">GNU GPL 3.0 or later</a>.</p>
+    <p>An independent project, not affiliated with or endorsed by Google, YouTube or SoundCloud.</p>
+    <p>This site sets no cookies and has no analytics. Icons by <a href="https://lucide.dev">Lucide</a> (ISC licence).</p>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+<script src="assets/demo.js" defer></script>
+</body>
+</html>
