@@ -93,6 +93,23 @@ pub async fn segments(video_id: &str) -> Result<Vec<crate::sponsorblock::Segment
     Ok(serde_json::from_value(json)?)
 }
 
+/// Lyrics of a track, looked up (and cached) by the server.
+pub async fn lyrics(track: &Track) -> Result<Option<crate::lyrics::Lyrics>> {
+    let url = format!(
+        "/api/lyrics?platform={}&id={}&title={}&artist={}{}",
+        track.platform.short(),
+        enc(&track.source_id),
+        enc(&track.title),
+        enc(&track.artist),
+        track.duration_secs.map(|d| format!("&duration={d}")).unwrap_or_default()
+    );
+    let (status, json) = fetch("GET", &url, None).await?;
+    if status != 200 {
+        return Err(api_error(status, &json));
+    }
+    Ok(serde_json::from_value(json)?)
+}
+
 /// Cover image bytes of a track, fetched (and cached) by the server.
 pub async fn cover(platform: crate::model::Platform, id: &str, size: crate::cover::Size) -> Result<Vec<u8>> {
     let url = format!("/api/cover?platform={}&id={}&size={}", platform.short(), enc(id), size.param());

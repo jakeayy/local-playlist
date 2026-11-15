@@ -26,7 +26,7 @@ default = ["desktop"]
 # The GPUI interface (desktop app and browser build).
 ui = ["dep:gpui-kit", "dep:image"]
 # Native desktop app: audio output, webview login, system keyring.
-desktop = ["ui", "dep:rodio", "dep:wry", "dep:tao", "dep:keyring", "dep:chacha20poly1305", "dep:lofty", "dep:memmap2"]
+desktop = ["ui", "dep:rodio", "dep:wry", "dep:tao", "dep:keyring", "dep:chacha20poly1305", "dep:lofty", "dep:memmap2", "dep:futures", "dep:ksni", "dep:windows"]
 # `--server`: web UI + API. Build only this for a slim server binary:
 #   cargo build --release --no-default-features --features server
 server = ["dep:tiny_http", "dep:rpassword"]
@@ -52,6 +52,8 @@ ureq = { version = "3.5.1", features = ["json"] }
 zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
 # desktop
 chacha20poly1305 = { version = "0.11.0", optional = true }
+# Channel from the tray icon's thread to the UI (already built for GPUI).
+futures = { version = "0.3.34", default-features = false, features = ["std"], optional = true }
 keyring = { version = "4.2.0", optional = true }
 # Cover art in downloaded files (pure Rust, no ffmpeg).
 lofty = { version = "0.22.4", optional = true }
@@ -63,6 +65,16 @@ wry = { version = "0.57", optional = true }
 # server
 rpassword = { version = "7.5.5", optional = true }
 tiny_http = { version = "0.12.0", optional = true }
+
+# Tray icon (desktop): a StatusNotifierItem over D-Bus, without GTK. Its D-Bus
+# library (zbus on async-io) is already built for GPUI's Linux backend.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"], optional = true }
+
+# Tray icon (desktop): the `windows` crate GPUI's Windows backend builds,
+# with features it already enables.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"], optional = true }
 
 # Browser build (see scripts/build-web.sh).
 [target.'cfg(target_family = "wasm")'.dependencies]

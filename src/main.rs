@@ -54,6 +54,15 @@ fn main() {
             diagnose(&args, &paths);
             return;
         }
+        // One copy at a time (it may be playing in the tray): a second start
+        // shows the running copy's window instead.
+        let _lock = match local_playlist::instance::start(&paths) {
+            local_playlist::instance::Start::First(lock) => lock,
+            local_playlist::instance::Start::Running => {
+                eprintln!("Local Playlist is already running: showing its window.");
+                return;
+            }
+        };
         local_playlist::run_desktop(paths);
     }
 

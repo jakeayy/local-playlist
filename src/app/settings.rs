@@ -81,7 +81,7 @@ impl LocalPlaylist {
         self.installing = Some(status.clone());
         cx.notify();
         let ytdlp = self.ytdlp.clone();
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let results = cx
                 .background_spawn(async move {
                     list.into_iter()
@@ -92,7 +92,7 @@ impl LocalPlaylist {
                         .collect::<Vec<_>>()
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            Self::finish(&this, cx, move |this, mut window, cx| {
                 this.installing = None;
                 for (c, r) in results {
                     let note = match r {
@@ -100,7 +100,7 @@ impl LocalPlaylist {
                         Ok(None) => Notification::info(format!("{} is already up to date", c.label())),
                         Err(e) => Notification::error(format!("{} download failed: {e:#}", c.label())).autohide(false),
                     };
-                    window.push_notification(note, cx);
+                    this.note(window.as_deref_mut(), note, cx);
                 }
                 this.refresh_components(cx);
                 cx.notify();
@@ -134,23 +134,23 @@ impl LocalPlaylist {
         }
     }
 
-    fn login(&mut self, p: Platform, window: &mut Window, cx: &mut Context<Self>) {
+    fn login(&mut self, p: Platform, cx: &mut Context<Self>) {
         if self.logging_in.is_some() {
             return;
         }
         self.logging_in = Some(p);
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { login::login(p) }).await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            Self::finish(&this, cx, move |this, window, cx| {
                 this.logging_in = None;
                 match result {
                     Ok(cookies) => {
                         this.creds.set(p, cookies);
                         this.persist_creds();
-                        window.push_notification(Notification::success(format!("Logged in to {}", p.label())), cx);
+                        this.note(window, Notification::success(format!("Logged in to {}", p.label())), cx);
                     }
-                    Err(e) => window.push_notification(Notification::warning(format!("{e:#}")), cx),
+                    Err(e) => this.note(window, Notification::warning(format!("{e:#}")), cx),
                 }
                 cx.notify();
             });
@@ -358,7 +358,7 @@ impl LocalPlaylist {
                                     .icon(IconName::LogIn)
                                     .label(if busy { "Waiting for login…" } else { "Log in" })
                                     .loading(busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| this.login(p, window, cx))),
+                                    .on_click(cx.listener(move |this, _, _, cx| this.login(p, cx))),
                             )
                         })
                         .when(logged_in, |d| {
@@ -430,8 +430,8 @@ impl LocalPlaylist {
                                     .icon(IconName::Import)
                                     .label(label)
                                     .loading(self.importing)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.import_link(link.clone(), false, window, cx)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.import_link(link.clone(), false, cx)
                                     }))
                             })),
                     )
@@ -620,6 +620,7 @@ impl LocalPlaylist {
                             ),
                     )
                     .child(self.render_sponsorblock(cx))
+                    .when(!crate::WEB, |d| d.child(self.render_background(cx)))
                     .when(crate::WEB, |d| {
                         d.child(
                             v_flex()
@@ -736,6 +737,45 @@ impl LocalPlaylist {
             })
     }
 
+    /// Desktop: keep playing with the window closed (tray icon).
+    fn render_background(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(feature = "desktop")]
+        {
+            use gpui_kit::component::switch::Switch;
+            let theme = cx.theme().clone();
+            let on = self.library.settings.background;
+            let no_tray = on && self.tray.is_none();
+            h_flex()
+                .gap_4()
+                .justify_between()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(div().text_lg().font_semibold().child("Play in the background"))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(
+                            "Closing the window keeps the music playing, with an icon in the system tray to bring the window back, control playback or quit.",
+                        ))
+                        .when(no_tray, |d| {
+                            d.child(div().text_sm().text_color(theme.warning).child(
+                                "No system tray was found, so closing the window quits. On GNOME, the AppIndicator extension adds one.",
+                            ))
+                        }),
+                )
+                .child(Switch::new("background").checked(on).on_click(cx.listener(|this, on: &bool, _, cx| {
+                    this.library.settings.background = *on;
+                    this.save();
+                    this.update_tray();
+                    cx.notify();
+                })))
+                .into_any_element()
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            let _ = cx;
+            div().into_any_element()
+        }
+    }
+
     fn change_music_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.downloads.is_empty() {
             window.push_notification(
@@ -750,16 +790,16 @@ impl LocalPlaylist {
             multiple: false,
             prompt: Some("Choose music folder".into()),
         });
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             let Some(new_root) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |this, window, cx| this.set_music_dir(Some(new_root), window, cx));
+            let _ = this.update(cx, |this, cx| this.set_music_dir(Some(new_root), cx));
         })
         .detach();
     }
 
     /// Switch the music root, moving existing playlist folders over.
-    fn set_music_dir(&mut self, dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_music_dir(&mut self, dir: Option<PathBuf>, cx: &mut Context<Self>) {
         let old_root = self.music_root();
         let new_root = dir.clone().unwrap_or_else(storage::default_music_root);
         if old_root == new_root {
@@ -774,7 +814,7 @@ impl LocalPlaylist {
         self.save();
         self.moving_music = true;
         cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let (old, new) = (old_root.clone(), new_root.clone());
             let errors = cx
                 .background_spawn(async move {
@@ -788,7 +828,7 @@ impl LocalPlaylist {
                     errors
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            Self::finish(&this, cx, move |this, window, cx| {
                 this.moving_music = false;
                 this.on_disk.clear();
                 let note = if errors.is_empty() {
@@ -797,7 +837,7 @@ impl LocalPlaylist {
                     Notification::error(format!("Some folders couldn't be moved: {}", errors.join("; ")))
                         .autohide(false)
                 };
-                window.push_notification(note, cx);
+                this.note(window, note, cx);
                 cx.notify();
             });
         })
@@ -857,7 +897,7 @@ impl LocalPlaylist {
                                         .ghost()
                                         .small()
                                         .label("Use default")
-                                        .on_click(cx.listener(|this, _, window, cx| this.set_music_dir(None, window, cx))),
+                                        .on_click(cx.listener(|this, _, _, cx| this.set_music_dir(None, cx))),
                                 )
                             })
                             .child(

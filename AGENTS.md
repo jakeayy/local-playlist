@@ -26,7 +26,7 @@ The server embeds the web UI only if `web/dist/` exists when it is built (`build
 | `src/main.rs` | Entry point: desktop app, `--server`, `--diagnose`, `--version` |
 | `src/lib.rs` | Module wiring and feature gates, icon assets, window options |
 | `src/app.rs` | Main window: sidebar, track list, player bar (GPUI view) |
-| `src/app/` | `settings.rs` (accounts, components), `visualizer.rs` + `backdrop.rs`, `progress.rs` (seek row, its own view), `thumbs.rs` (bounded thumbnail cache) |
+| `src/app/` | `settings.rs` (accounts, components), `visualizer.rs` + `backdrop.rs`, `lyrics.rs` (lyrics page, its own view), `progress.rs` (seek row, its own view), `thumbs.rs` (bounded thumbnail cache) |
 | `src/model.rs` | Library model, `library.json` persistence, `Paths` (data and cache dirs) |
 | `src/sources/` | Link parsing; YouTube (InnerTube web API, oEmbed) and SoundCloud (api-v2) metadata, with yt-dlp as fallback |
 | `src/ytdlp.rs` | Managed components (yt-dlp master build, QuickJS), downloads through yt-dlp |
@@ -36,10 +36,13 @@ The server embeds the web UI only if `web/dist/` exists when it is built (`build
 | `src/cover.rs` | Cover art: fetch, disk cache, embedding into files |
 | `src/remux.rs` | Fragmented MP4 → plain MP4 without ffmpeg |
 | `src/sponsorblock.rs` | SponsorBlock segments (privacy-preserving hash-prefix lookups) |
+| `src/lyrics/` | Lyrics: artist/title guessing for uploads (`query.rs`), LRC and Lyricsfile parsing (`formats.rs`), LRCLIB and lrc.red lookups, disk cache |
+| `src/tray.rs`, `src/tray/` | Tray icon for playing in the background (ksni on Linux, Shell_NotifyIcon on Windows) |
+| `src/instance.rs` | One desktop app at a time: a second start shows the running one's window |
 | `src/spectrum.rs` | FFT and bands for the visualizer (no dependencies, builds for wasm) |
 | `src/secrets.rs` | Encrypted cookie storage (ChaCha20-Poly1305, key in the OS keyring) |
 | `src/login.rs`, `src/bin/login.rs` | Starts / implements the webview login helper |
-| `src/server.rs` | `--server`: static web UI, auth, `/api/*` (resolve, segments, cover, audio) |
+| `src/server.rs` | `--server`: static web UI, auth, `/api/*` (resolve, segments, cover, lyrics, audio) |
 | `src/web/` | Browser build: entry point, API client, and stand-ins for desktop-only modules |
 | `src/theme.rs`, `assets/` | Material 3 themes (`assets/material-theme.json`), Noto Sans fonts |
 | `src/mem.rs` | glibc allocator tuning (`tune`, `trim`) |
@@ -62,6 +65,11 @@ changing the module, and keep it accurate.
 - Gate with `#[cfg(feature = "desktop")]`, `#[cfg(feature = "server")]` and
   `#[cfg(target_family = "wasm")]`; use `crate::WEB` for runtime checks. `std::time` doesn't
   work in the browser: use `crate::now_ms()`.
+- On the desktop, closing the window can leave the app running (tray icon, see
+  `src/tray.rs`): the main view outlives its window and gets a new one from the tray
+  (`LocalPlaylist::attach`). So `self.window` may be `None`; don't tie work that must
+  finish to the window (`cx.spawn_in`): use `cx.spawn` and `LocalPlaylist::finish`, and
+  put notifications in `pending_notes` or `note`. Text inputs are made per window.
 - Windows-only code (`cfg(windows)`) can't be compiled on Linux; CI builds and tests it.
 
 ## Checks
@@ -132,9 +140,11 @@ cargo +nightly check --locked --lib --target wasm32-unknown-unknown --no-default
 These are product requirements, not style preferences:
 
 - No telemetry, analytics or new network destinations. The app talks only to YouTube and
-  SoundCloud (and their image/script CDNs), SponsorBlock, GitHub (component downloads) and
-  PyPI (the `yt-dlp-ejs` wheel, on platforms without a yt-dlp build). A new destination
-  needs the maintainer's explicit approval.
+  SoundCloud (and their image/script CDNs), SponsorBlock, LRCLIB and lrc.red (lyrics, only
+  while the lyrics page is shown), GitHub (component downloads) and PyPI (the `yt-dlp-ejs`
+  wheel, on platforms without a yt-dlp build). A new destination needs the maintainer's
+  explicit approval. (Genius sits behind a bot challenge and Musixmatch needs a session
+  token, so neither is used for lyrics.)
 - Platform cookies go only to their own platform, and only when needed: the anonymous
   path comes first, and the session is used for personal lists or as a retry.
 - The server and the web UI never receive platform credentials. The server accepts only
@@ -150,9 +160,9 @@ These are product requirements, not style preferences:
 Paths come from `directories::ProjectDirs` (`model::Paths`); on Linux:
 
 - `~/.local/share/local-playlist/`: `library.json`, `credentials.bin`, `components/` (yt-dlp,
-  QuickJS).
+  QuickJS), `instance.lock` (held while the desktop app runs).
 - `~/.cache/local-playlist/`: `covers/`, `removed/` (removed-tracks cache), `yt-dlp/`,
-  `sponsorblock.json`, `soundcloud_client_id`.
+  `lyrics/` (one JSON file per track), `sponsorblock.json`, `soundcloud_client_id`.
 - Music: `<XDG music dir or ~/Music>/local-playlist/<Playlist>/<Platform>-<id>.<ext>`;
   downloads in progress go to `.downloading/` inside the playlist folder.
 

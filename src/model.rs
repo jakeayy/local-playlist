@@ -133,6 +133,8 @@ pub struct Settings {
     pub sponsorblock: bool,
     /// SponsorBlock categories to skip (see `sponsorblock::CATEGORIES`).
     pub sponsorblock_categories: Vec<String>,
+    /// Desktop: closing the window keeps the app playing, with a tray icon.
+    pub background: bool,
 }
 
 impl Default for Settings {
@@ -149,6 +151,7 @@ impl Default for Settings {
             cover_colors: true,
             sponsorblock: true,
             sponsorblock_categories: crate::sponsorblock::default_categories(),
+            background: true,
         }
     }
 }
@@ -177,6 +180,11 @@ impl RepeatMode {
 pub struct Library {
     pub playlists: Vec<Playlist>,
     pub settings: Settings,
+    /// How much later (ms; negative: earlier) to show each song's timed
+    /// lyrics, set by the user, by track file key (`Platform-id`): a music
+    /// video often has an intro the lyrics weren't timed with.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub lyrics_offsets: std::collections::BTreeMap<String, i32>,
 }
 
 #[cfg(target_family = "wasm")]
