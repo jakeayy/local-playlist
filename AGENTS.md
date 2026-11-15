@@ -55,9 +55,10 @@ changing the module, and keep it accurate.
 - Features: `desktop` (default; implies `ui`), `ui` (GPUI interface), `server`. On native
   targets `ui` requires `desktop` (a `compile_error!` enforces it).
 - The web UI is the same GPUI code compiled for `wasm32-unknown-unknown` with
-  `--no-default-features --features ui`. Desktop-only modules (`audio`, `login`, `ytdlp`)
-  have web stand-ins with the same API in `src/web/`, chosen with `#[path]` in `lib.rs`. If
-  you change the public API of one of those modules, change its stand-in too.
+  `--no-default-features --features ui`. Three modules have web stand-ins with the same API
+  in `src/web/`, chosen with `#[path]` in `lib.rs`: `audio` and `login` (desktop-only) and
+  `ytdlp` (native: the desktop app and the server both use it, so don't gate it on
+  `desktop`). If you change the public API of one of them, change its stand-in too.
 - Gate with `#[cfg(feature = "desktop")]`, `#[cfg(feature = "server")]` and
   `#[cfg(target_family = "wasm")]`; use `crate::WEB` for runtime checks. `std::time` doesn't
   work in the browser: use `crate::now_ms()`.
@@ -79,11 +80,14 @@ cargo +nightly check --locked --lib --target wasm32-unknown-unknown --no-default
   needs none.
 - Tests live in `#[cfg(test)] mod tests` inside each module. Offline tests must not touch
   the network.
-- Live tests are `#[ignore]`d with a reason (`"network"`, `"needs ffmpeg"`, …). Run
-  `cargo test -- --ignored` when you change sources, components or playback; they talk to
-  YouTube, SoundCloud and GitHub, and download yt-dlp and QuickJS. A few need input:
-  `LP_DECODE_FILE=<audio file>` (decoder test) and `LP_CALIBRATE=<file>:<file>`
-  (visualizer tuning, with `--nocapture`).
+- Live tests are `#[ignore]`d with a reason (`"network"`, `"needs ffmpeg"`, …). Run the
+  ones for the area you changed, by name: e.g. `cargo test sources:: -- --ignored` or
+  `cargo test live_ -- --ignored`. They talk to YouTube, SoundCloud and GitHub, download
+  yt-dlp and QuickJS, and work in temporary directories, not the user's library. A bare
+  `cargo test -- --ignored` also runs tests that need input and fail without it:
+  `decode_file` (`LP_DECODE_FILE=<audio file>`), `calibrate`
+  (`LP_CALIBRATE=<file>:<file>`, with `--nocapture`), and the ffmpeg ones
+  (`embeds_into_each_format`, `matches_ffmpeg_decode`).
 - Use public links only, in tests and anywhere else.
 - Release builds (`opt-level = "s"`, fat LTO, one codegen unit) are slow. Use `cargo check`
   or debug builds while iterating.
@@ -105,9 +109,12 @@ cargo +nightly check --locked --lib --target wasm32-unknown-unknown --no-default
 - **Errors:** `anyhow::Result` with `.context(...)`; print chains with `{e:#}`.
 - **Logging:** `eprintln!` (there is no logging crate). Never print cookie values, tokens,
   passwords, or (in the server) request URLs.
-- **Concurrency:** UI work goes through GPUI tasks (`cx.spawn`, `cx.spawn_in`); blocking
-  work (network, files, yt-dlp, decoding) runs on `std::thread::spawn`. After bursts of large
-  allocations (big JSON pages, many covers) call `crate::mem::trim()`.
+- **Concurrency:** views run async work as GPUI tasks (`cx.spawn`, `cx.spawn_in`). A blocking
+  call whose result the view needs (resolving a link, a login, component status) runs as
+  `cx.background_spawn(async move { blocking_call() }).await` inside such a task. Long-lived
+  jobs (downloads, the decoder, file moves, server workers) get their own
+  `std::thread::spawn`. After bursts of large allocations (big JSON pages, many covers) call
+  `crate::mem::trim()`.
 - **Size, memory and redraws matter:** release sizes are listed in the README, memory use
   is kept bounded (`mem.rs`, `app/thumbs.rs`), and per-frame work is kept small
   (`app/progress.rs` is its own view so a ticking clock doesn't redraw the window). Before
@@ -116,17 +123,18 @@ cargo +nightly check --locked --lib --target wasm32-unknown-unknown --no-default
   why in a comment in `Cargo.toml`, as the existing entries do. Builds use `--locked`.
 - **Comments:** explain why, not what. Prose uses British spelling (colour, behaviour,
   optimised).
-- **GPUI APIs:** GPUI Kit 0.9 with the `gpui-fast` backend differs from upstream Zed GPUI.
-  Look APIs up in the crate sources (`~/.cargo/registry/src/*/gpui-kit-0.9.*` and
-  `gpui-fast-*`) instead of guessing.
+- **GPUI APIs:** the UI uses GPUI Kit with the `gpui-fast` backend, at the versions in
+  `Cargo.lock`. Look APIs up in those crates' sources (`~/.cargo/registry/src/*/gpui-kit-*`
+  and `gpui-fast-*`) rather than from memory of other GPUI versions.
 
 ## Privacy and safety rules
 
 These are product requirements, not style preferences:
 
-- No telemetry, analytics or new network destinations. The app talks only to YouTube,
-  SoundCloud, SponsorBlock and GitHub (component downloads). A new destination needs the
-  maintainer's explicit approval.
+- No telemetry, analytics or new network destinations. The app talks only to YouTube and
+  SoundCloud (and their image/script CDNs), SponsorBlock, GitHub (component downloads) and
+  PyPI (the `yt-dlp-ejs` wheel, on platforms without a yt-dlp build). A new destination
+  needs the maintainer's explicit approval.
 - Platform cookies go only to their own platform, and only when needed: the anonymous
   path comes first, and the session is used for personal lists or as a retry.
 - The server and the web UI never receive platform credentials. The server accepts only
