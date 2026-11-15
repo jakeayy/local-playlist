@@ -35,7 +35,7 @@ request. The pull request template has the full checklist.
 Local Playlist doesn't phone home. Changes must keep it that way:
 
 - No telemetry, analytics or new network destinations other than the platforms
-  themselves, SponsorBlock, and GitHub for components.
+  themselves, SponsorBlock, GitHub for components, and PyPI for the `yt-dlp-ejs` wheel.
 - Platform cookies are sent only to their own platform, and only when needed.
 - The web UI and the server never receive platform credentials.
 - No cookies, tokens or passwords in logs or error messages.
