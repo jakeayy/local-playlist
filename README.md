@@ -1,221 +1,192 @@
-# Local Playlist
+<p align="center">
+  <img src="docs/icon.svg" width="112" height="112" alt="">
+</p>
 
-[![Latest release](https://img.shields.io/github/v/release/jakeayy/local-playlist?label=release)](https://github.com/jakeayy/local-playlist/releases/latest)
-[![Latest pre-release](https://img.shields.io/github/v/release/jakeayy/local-playlist?include_prereleases&label=pre-release)](https://github.com/jakeayy/local-playlist/releases)
-[![Docker image](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/jakeayy/local-playlist/pkgs/container/local-playlist)
+<h1 align="center">Local Playlist</h1>
 
-A privacy-friendly, local-first music player for links from **YouTube / YouTube Music** and
-**SoundCloud**. Paste links, build playlists that live on your machine, and play them
-directly in the app. No accounts, no logins, no telemetry.
+<p align="center">
+  <a href="https://github.com/jakeayy/local-playlist/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/jakeayy/local-playlist?label=release"></a>
+  <a href="https://github.com/jakeayy/local-playlist/releases"><img alt="Latest pre-release" src="https://img.shields.io/github/v/release/jakeayy/local-playlist?include_prereleases&label=pre-release"></a>
+  <a href="https://github.com/jakeayy/local-playlist/pkgs/container/local-playlist"><img alt="Docker image" src="https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white"></a>
+</p>
 
-Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, and yt-dlp.
+A privacy-friendly music player for links from **YouTube / YouTube Music** and
+**SoundCloud**. Paste links, build playlists that live on your computer, and listen to
+them in the app, also offline. No account, no ads, no tracking.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/playlist-dark.png">
+  <img src="docs/screenshots/playlist-light.png" alt="A playlist mixing YouTube and SoundCloud tracks, one of them playing; the theme takes its accent colour from the cover">
+</picture>
+
+<table>
+  <tr>
+    <td>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/visualizer-dark.png">
+        <img src="docs/screenshots/visualizer-light.png" alt="The circle visualizer over a night sky with an aurora and mountain ridges">
+      </picture>
+    </td>
+    <td>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
+        <img src="docs/screenshots/settings-light.png" alt="Settings: appearance, colours from cover art, and SponsorBlock categories">
+      </picture>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">Visualizer</td>
+    <td align="center">Settings</td>
+  </tr>
+</table>
+
+<sub>Music in the screenshots: releases by <a href="https://ncs.io">NoCopyrightSounds</a>.</sub>
+
+## Contents
+
+- [Features](#features)
+- [Download](#download)
+- [Getting started](#getting-started)
+- [Privacy](#privacy)
+- [Web version (self-hosted)](#web-version-self-hosted)
+- [Help and feedback](#help-and-feedback)
+- [License](#license)
+- [Star history](#star-history)
 
 ## Features
 
-- **Material-style light and dark themes** that can follow the system.
-- **Mixed playlists:** add YouTube, YouTube Music and SoundCloud tracks to the same playlist
-  by pasting their link (`watch?v=`, `youtu.be/`, `shorts/`, `music.youtube.com`,
-  `soundcloud.com/artist/track`, `on.soundcloud.com` short links).
-- **Import** whole collections as a new playlist, without logging in:
-  - YouTube / YouTube Music public or unlisted playlists
-  - SoundCloud sets/albums, a profile's tracks, and a profile's public likes (`/likes`)
-- **Built-in playback with streaming:** playback starts after about 3 s of audio has
-  downloaded instead of waiting for the whole file, and you can seek while it's still
-  downloading. Play/pause, next/previous, volume, shuffle, and repeat (playlist / track)
-  are all there. The next track is prefetched so playback continues without a gap.
-- **Search** filters a playlist by title or artist.
-- **SponsorBlock:** non-music parts, sponsors, self-promotion and "like and subscribe"
-  reminders in YouTube tracks are skipped using
-  [SponsorBlock](https://sponsor.ajay.app/) data. Files aren't cut, so durations stay
-  correct; playback just jumps past the segments. Categories (also intros, outros,
-  previews, filler) can be chosen in Settings, or the feature turned off. Segments are
-  cached so skipping works offline.
-- **Real files on disk:** tracks are saved as
-  `<Music>/local-playlist/<Playlist name>/<Platform>-<id>.m4a`, so they play offline and
-  in any player. "Download all" fetches a whole playlist. Renaming a playlist renames its
-  folder.
-- **Removed-tracks cache:** removing a track moves its file to a size-limited cache
-  (2 GB by default; oldest files go first). Re-adding the track restores it instantly.
-  The same song in several playlists is hard-linked or copied, never downloaded twice.
-- **Optional accounts** for private playlists, YouTube *Liked videos* / *Liked music* /
-  *Watch later*, and your SoundCloud likes:
-  - **Log in** opens the platform's normal sign-in page in a private (incognito) webview
-    that identifies as Firefox. Once you're signed in, the app keeps only the session
-    cookies. There are no OAuth apps or client IDs.
-  - **Paste cookies…** accepts a Netscape `cookies.txt` export or a raw `Cookie:` header.
-    See [ADDING-COOKIES.md](ADDING-COOKIES.md) for how to get them.
-  - Sessions are used only when needed: for personal lists, or as a retry when anonymous
-    access fails.
-- **Batteries included:** on first run the app offers to download
-  - **yt-dlp:** the official build of the latest `master` commit
-    (`yt-dlp/yt-dlp-master-builds`, SHA-256 verified), with Python and the YouTube
-    challenge solver bundled.
-  - **QuickJS** (~3 MB), the JavaScript runtime yt-dlp uses for YouTube.
+- **One playlist for everything:** YouTube, YouTube Music and SoundCloud tracks side by
+  side. Just paste a link.
+- **Import whole playlists** from YouTube and YouTube Music, and SoundCloud sets, profiles
+  and likes. Public ones don't need a login.
+- **Starts playing right away**, while the track is still downloading, and the next one
+  is ready before the current one ends.
+- **Your music, offline:** every track is saved as an ordinary audio file (with its cover)
+  in your Music folder, so it also plays without internet and in any other player.
+  "Download all" saves a whole playlist at once.
+- **Skips the boring parts** of YouTube videos with [SponsorBlock](https://sponsor.ajay.app/):
+  talking, sponsors, "like and subscribe" reminders. You choose what to skip, or turn it off.
+- **Visualizer:** bars, or a circle over a night sky that moves with the music.
+- **Light and dark themes**, with colours taken from the cover of what's playing.
+- **Removed by mistake?** Removed tracks are kept for a while (up to 2 GB), so adding one
+  back is instant.
+- **Optional login** for private playlists, YouTube *Liked videos*, *Liked music* and
+  *Watch later*, and your SoundCloud likes.
+- **Nothing else to install:** on first start the app offers to download the two helpers
+  it needs (yt-dlp and QuickJS). **Update bundled components** in Settings gets their
+  newest versions.
 
-  Each component can be switched to the system version in Settings. "Update bundled
-  components" fetches the newest builds.
+## Download
 
-## How it stays private
+Get the latest version from the [Releases page](https://github.com/jakeayy/local-playlist/releases/latest):
 
-- Your library is a plain JSON file at `~/.local/share/local-playlist/library.json`.
-- Logins are stored in `credentials.bin`, encrypted with ChaCha20-Poly1305. The key lives
-  in the system keyring (Secret Service / Windows Credential Manager / macOS Keychain).
-  "Log out" deletes the session.
+- **Windows (64-bit):** download `local-playlist-<version>-windows-x64.zip`, unzip it, and
+  run `local-playlist.exe`.
+- **Linux (64-bit):** download `local-playlist-<version>-linux-x64.tar.gz`, extract it, and
+  run `local-playlist`. It needs a recent distribution (e.g. Ubuntu 24.04, Debian 13,
+  Fedora 40 or newer). Logging in also needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on
+  Ubuntu/Debian, `webkit2gtk4.1` on Fedora).
+
+Keep `local-playlist-login` next to the app: it's the window you log in with.
+
+Pre-releases are builds of the newest changes. They may be less stable.
+
+## Getting started
+
+1. **Start the app.** The first time, it offers to download yt-dlp and QuickJS; say yes.
+2. **Make a playlist** with **+** at the top of the sidebar, or bring one in: paste a
+   playlist link under **Import playlist** and click **Import as new playlist**.
+3. **Add songs** by pasting a YouTube or SoundCloud link into the box above the track list
+   and clicking **Add**.
+4. **Click a track to play it.** It's saved to your Music folder as it plays (Settings →
+   Storage shows where, and lets you change it).
+
+<details>
+<summary>Which links work?</summary>
+
+- **YouTube / YouTube Music tracks:** `youtube.com/watch?v=…`, `youtu.be/…`,
+  `youtube.com/shorts/…`, `music.youtube.com/watch?v=…`
+- **YouTube / YouTube Music playlists:** public or unlisted (`…/playlist?list=…`)
+- **SoundCloud:** tracks (`soundcloud.com/artist/track`), sets and albums, a profile's
+  tracks, a profile's public likes (`soundcloud.com/artist/likes`), and `on.soundcloud.com`
+  short links
+
+With a login, also private playlists, YouTube *Liked videos*, *Liked music* and *Watch
+later*, and your own SoundCloud likes.
+
+</details>
+
+To use private playlists or your likes, open **Settings & accounts** and log in. If logging
+in doesn't work for you, you can paste cookies from your browser instead; see
+[ADDING-COOKIES.md](ADDING-COOKIES.md).
+
+## Privacy
+
+- **Nothing is collected.** There are no accounts, ads, analytics or tracking. Your
+  playlists and settings are a file on your computer.
+- **The app only talks to** YouTube and SoundCloud (to look up and download tracks),
+  SponsorBlock (if turned on), and GitHub (to download yt-dlp and QuickJS).
+- **SponsorBlock isn't told which video you're playing:** the app asks about a group of
+  many videos at once and picks out the right one itself.
+- **Logging in is optional.** Without it, the app uses only what YouTube and SoundCloud
+  show to any visitor, and sends no cookies. If you do log in, your login stays on your
+  computer, encrypted, with the key in your system keyring (or, without one, in a private
+  file). **Log out** deletes it.
+
+<details>
+<summary>Technical details</summary>
+
+- Your library is a plain JSON file, `library.json`, in the app's data folder (on Linux
+  `~/.local/share/local-playlist/`; Settings shows the exact path).
+- Logins are stored in `credentials.bin` next to it, encrypted with ChaCha20-Poly1305. The
+  key lives in the system keyring (Secret Service / Windows Credential Manager / macOS
+  Keychain), or in a private key file if there is no keyring.
 - Metadata comes from each platform's public web endpoints, the same ones their websites
   use for logged-out visitors: YouTube InnerTube and oEmbed, and SoundCloud api-v2 with the
   public web `client_id`. Unless you log in, no cookies are sent or stored.
-- Audio is downloaded by yt-dlp into your music folder (configurable in Settings → Storage)
-  and played locally. Removed tracks wait in `~/.cache/local-playlist/removed/` up to the
-  size limit.
-- The only network destinations are YouTube, SoundCloud, their CDNs, and SponsorBlock
-  (`sponsor.ajay.app`, unless turned off). SponsorBlock lookups send only the first 4
-  characters of the video id's SHA-256 hash, shared by many videos. GitHub is
-  contacted only to download or update components.
+- Audio is downloaded by yt-dlp into your music folder and played locally. Removed tracks
+  wait in the cache folder (on Linux `~/.cache/local-playlist/removed/`) up to the size
+  limit set in Settings.
+- Network destinations: YouTube, SoundCloud and their CDNs; SponsorBlock
+  (`sponsor.ajay.app`, unless turned off), which gets only the first 4 characters of the
+  video id's SHA-256 hash; GitHub, to download or update yt-dlp and QuickJS; and, only on
+  systems without a ready-made yt-dlp build, PyPI.
+
+</details>
 
 ## Web version (self-hosted)
 
-The same app also runs in the browser, served by the binary itself:
+Have a home server? It can run Local Playlist for any browser on your network. Your
+playlists stay in each browser; the server only looks up links and streams the audio.
+Logins, private playlists and offline folders are desktop-only.
 
-```sh
-LOCAL_PLAYLIST_PASSWORD='a long password' local-playlist --server --listen 0.0.0.0:8080
-# or interactively: local-playlist --server   (prompts for the password)
-```
-
-Open `http://<host>:8080`, enter the password, and use it like the desktop app.
-
-`--server` is in the server downloads on the Releases page (`…-server`), the Docker image,
-and builds with the `server` feature (`cargo build --release --features server`; see below).
-
-- **Privacy:** your playlists and settings stay in the browser (local storage). The server
-  only looks up public links and streams their audio. It never receives platform logins,
-  so private playlists, likes and offline folders are desktop-only. Request URLs aren't
-  logged, and cached audio is deleted after `--cache-minutes` (default 120).
-- **Safety:** an access password (at least 8 characters) is required, and repeated wrong
-  guesses are throttled. Only YouTube and SoundCloud links are accepted, so the server
-  can't be used as a general proxy. Put it behind HTTPS (a reverse proxy) when exposing
-  it beyond your network.
-- **Components:** yt-dlp and QuickJS are downloaded into the data directory on first
-  start (`--system-tools` uses the ones on PATH), and yt-dlp is updated daily.
-- **Tip:** run it on a home connection. Datacenter IPs often get YouTube's "confirm
-  you're not a bot" wall.
-
-Options: `--listen ADDR`, `--data-dir DIR` (or `$LOCAL_PLAYLIST_DATA`), `--password-file FILE`,
-`--system-tools`, `--cache-minutes N`.
-
-### Docker
-
-Images for x64 are published on GitHub's container registry: `latest` is the newest
-release, `dev` the newest build (development builds included), and each release also
-has its version as a tag (e.g. `0.1.0`).
+With Docker:
 
 ```sh
 docker run -d --name local-playlist -p 8080:8080 -v lp-data:/data \
     -e LOCAL_PLAYLIST_PASSWORD='a long password' ghcr.io/jakeayy/local-playlist:latest
 ```
 
-Or build the image yourself: `docker build -t local-playlist .`
+Or download the `…-server` version from the Releases page and run
+`local-playlist --server`; it asks for a password. Then open `http://<server>:8080`.
 
-### Building the web UI yourself
+- A password (8 characters or more) protects it, and only YouTube and SoundCloud links are
+  accepted.
+- It doesn't log which links are requested, and deletes cached audio after two hours
+  without use (`--cache-minutes`).
+- It downloads yt-dlp and QuickJS on first start and updates yt-dlp daily.
+- Run it on a home connection: YouTube often blocks servers in data centres.
+- To use it from outside your network, put it behind HTTPS (a reverse proxy).
+- All options: `local-playlist --server --help`.
 
-The browser build is GPUI compiled to WebAssembly. It needs a nightly toolchain because
-GPUI's web backend uses unstable wasm-threading features. The desktop app builds on stable.
+## Help and feedback
 
-```sh
-rustup toolchain install nightly --profile minimal --target wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version <wasm-bindgen version from Cargo.lock> --locked
-# optional, shrinks the download ~40%: wasm-opt from https://github.com/WebAssembly/binaryen/releases
-./scripts/build-web.sh      # writes web/dist/
-cargo build --release --features server   # desktop app + server, embeds web/dist
-```
-
-Without `web/dist`, `--server` still runs but serves only the API.
-
-For a server-only binary (no GUI libraries, links only libc; this is what the Docker
-image uses):
-
-```sh
-cargo build --release --no-default-features --features server
-```
-
-Cargo features: `desktop` (GPUI app, audio, webview login, keyring; implies `ui`) is on
-by default. `server` adds `--server`; it embeds the web UI (~6 MB), so it's opt-in for
-desktop builds. The browser build uses only `ui`.
-
-## Requirements
-
-Runtime: nothing beyond the OS. yt-dlp and QuickJS are downloaded by the app.
-**ffmpeg** is optional. Downloads are turned into plain m4a files with the cover
-embedded either way (built in); ffmpeg, when present, is used for that conversion
-instead and can also convert the rare tracks without AAC/MP3 audio.
-If you choose "System" components instead, you need `yt-dlp` and one of `deno`/`node`/
-`bun`/`qjs` on `PATH`.
-
-Build the desktop app (Fedora package names):
-
-```sh
-sudo dnf install alsa-lib-devel webkit2gtk4.1-devel gtk3-devel dbus-devel
-cargo build --release
-target/release/local-playlist
-```
-
-This builds two executables: the app, `local-playlist`, and its login window,
-`local-playlist-login`, which the app starts from its own folder when you log in to a
-platform. Keep them side by side. (The login window is separate so the app itself never
-loads the webview libraries. `cargo run` builds only the app.)
-
-The server-only build needs none of these.
-
-## Development
-
-```sh
-cargo fmt                        # format (CI checks it; settings in rustfmt.toml)
-cargo test                       # offline unit tests
-cargo test -- --ignored          # live tests against YouTube / SoundCloud / GitHub
-local-playlist --version         # version + commit, for bug reports
-```
-
-Builds for Linux and Windows (x64), the desktop app and the server (with the web UI), are
-published on the Releases page by GitHub Actions, each built on its own platform
-(`.github/workflows/build.yml`):
-
-- Every push to `main` that changes the code is built and published as the pre-release
-  `dev-<commit>`, replacing the previous one (`.github/workflows/dev.yml`).
-- Bumping `version` in `Cargo.toml` publishes the release `v<version>` and removes the
-  development pre-release (`.github/workflows/release.yml`). It can also be run by hand
-  from the Actions tab (Release → Run workflow).
-
-On Windows the desktop app is a GUI program (no console window). Started from a terminal,
-its output and logs go to that terminal. The terminal doesn't wait for it, though, so they
-appear after the prompt. The server build is an ordinary console program.
-
-Release builds use full LTO with a single codegen unit (smaller, at least as fast, but
-slower to compile). The web build uses the size-focused `wasm-release` profile plus
-`wasm-opt`.
-
-Approximate release sizes: desktop app (including server and web UI) 48 MB, server-only
-9.5 MB, web UI 5.8 MB gzipped.
-
-Bug reports, site-breakage reports and feature requests use issue forms. Pull requests
-come with a checklist covering the three builds and the privacy rules; see
-[CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately ([SECURITY.md](SECURITY.md)).
-
-Layout:
-
-| File | Purpose |
-| --- | --- |
-| `src/app.rs` | Main window: sidebar, track list, player bar |
-| `src/model.rs` | Library model and JSON persistence |
-| `src/sources/` | Link parsing; YouTube and SoundCloud metadata |
-| `src/app/settings.rs` | Settings page: accounts and components |
-| `src/ytdlp.rs` | Components (yt-dlp build, QuickJS), metadata fallback, audio download |
-| `src/login.rs` | Starts the login window and reads the session cookies it returns |
-| `src/bin/login.rs` | The login window (`local-playlist-login <platform>`), a webview |
-| `src/secrets.rs` | Encrypted cookie storage, cookie parsing |
-| `src/server.rs` | `--server`: web UI, auth, resolve and audio streaming API |
-| `src/web/` | Browser build: entry point, server API client, `<audio>` playback, stand-ins |
-| `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
-| `src/download.rs` | Shared download state |
-| `src/storage.rs` | Music folder layout, removed-tracks cache |
+- **Something broke?** YouTube and SoundCloud change things now and then. Please
+  [open an issue](https://github.com/jakeayy/local-playlist/issues/new/choose); there's a
+  form for exactly that.
+- **Questions and ideas:** [Discussions](https://github.com/jakeayy/local-playlist/discussions).
+- **Security problems:** please report them privately; see [SECURITY.md](SECURITY.md).
+- **Want to build it yourself or help out?** See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
@@ -228,3 +199,12 @@ WITHOUT ANY WARRANTY; see [LICENSE](LICENSE) for details.
 
 The bundled Noto Sans fonts are under the SIL Open Font License
 ([assets/fonts/OFL.txt](assets/fonts/OFL.txt)).
+
+## Star history
+
+<a href="https://www.star-history.com/?repos=jakeayy%2Flocal-playlist">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jakeayy/local-playlist&type=Date&theme=dark">
+    <img alt="Star history chart for jakeayy/local-playlist" src="https://api.star-history.com/svg?repos=jakeayy/local-playlist&type=Date">
+  </picture>
+</a>
