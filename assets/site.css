@@ -602,3 +602,71 @@ h1 { margin: 22px auto 0; max-width: 900px; }
   .d-check { flex-wrap: wrap; }
   .d-check small { flex-basis: 100%; padding-left: 26px; }
 }
+
+/* ------------------------------------------------------------------------------------------
+   Easter egg ("Easter egg" in assets/demo.js): the window's first dot closes it and shows a
+   desktop with the app and a terminal. The dot must keep looking and behaving like the other two:
+   no cursor, hover or focus style. Its hit area is a little larger than it looks, for fingers.
+   ------------------------------------------------------------------------------------------ */
+.demo { isolation: isolate; }
+.d-body { background: var(--d-bg); transition: background-color .3s; } /* so the desktop behind doesn't show through while the window animates */
+.d-chrome .d-dot:first-child { position: relative; -webkit-tap-highlight-color: transparent; }
+.d-chrome .d-dot:first-child::after { content: ""; position: absolute; inset: -5px; }
+.demo[data-closed] > :not(.d-desk) { display: none; }
+
+.d-desk {
+  position: absolute; inset: 0; z-index: -1; overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--d-primary) 30%, transparent), transparent 60%),
+    radial-gradient(100% 80% at 100% 100%, color-mix(in srgb, var(--d-yt-fg) 16%, transparent), transparent 60%),
+    var(--d-bg);
+}
+.d-desk[hidden] { display: none; }
+.d-desk-icons { position: absolute; top: 14px; left: 14px; display: grid; gap: 6px; }
+.d-desk-icon { display: grid; justify-items: center; gap: 6px; width: 92px; padding: 8px 4px; border: 0; border-radius: 12px; background: transparent; cursor: pointer; font-size: 13px; line-height: 1.25; text-align: center; }
+.d-desk-icon:hover { background: color-mix(in srgb, var(--d-fg) 8%, transparent); }
+.d-desk-icon img { width: 48px; height: 48px; }
+.d-desk-glyph { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 13px; background: hsl(var(--dh) 12% 10%); color: #81C995; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .1); }
+.d-desk-glyph .i { width: 28px; height: 28px; }
+.d-desk-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: flex-end;
+  height: 34px; padding: 0 14px; font-size: 12.5px; white-space: pre; font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--d-side) 80%, transparent); border-top: 1px solid var(--d-border);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+}
+
+/* The terminal is dark in either theme, tinted like the rest of the demo. */
+.d-term {
+  --t-fg: #E6E0E9; --t-muted: #B7B0BF; --t-green: #81C995; --t-accent: hsl(var(--dh) 90% 86%); --t-err: #F2B8B5;
+  position: absolute; z-index: 1; display: flex; flex-direction: column;
+  width: min(560px, calc(100% - 28px)); height: min(380px, calc(100% - 90px));
+  border-radius: 12px; overflow: hidden; color-scheme: dark;
+  background: hsl(var(--dh) 12% 8%); color: var(--t-fg);
+  border: 1px solid rgb(255 255 255 / .08); box-shadow: 0 14px 44px rgb(0 0 0 / .35);
+  font: 13px/1.5 var(--mono);
+}
+.d-term[hidden] { display: none; }
+@media (max-width: 600px) { .d-term { height: min(340px, calc(100% - 90px)); } } /* leaves room for the icons above */
+.d-term-bar { display: flex; align-items: center; gap: 6px; flex: none; height: 30px; padding: 0 10px; background: hsl(var(--dh) 10% 14%); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.d-term-bar:active { cursor: grabbing; }
+.d-term-dot { width: 11px; height: 11px; flex: none; padding: 0; border: 0; border-radius: 50%; background: hsl(var(--dh) 7% 30%); }
+button.d-term-dot { cursor: pointer; }
+button.d-term-dot:hover { background: var(--t-err); }
+.d-term-title { flex: 1; min-width: 0; margin-right: 45px; text-align: center; font: 500 12px var(--font); color: var(--t-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-term-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px 12px; cursor: text; scrollbar-width: thin; }
+.d-term-out > div { white-space: pre-wrap; overflow-wrap: anywhere; }
+.d-term-line { display: flex; }
+.d-term-line[hidden] { display: none; }
+.d-term-in { flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; caret-color: var(--t-green); }
+.demo .d-term-in:focus-visible { outline: none; }
+.d-term-u { color: var(--t-green); font-weight: 600; }
+.d-term-p, .d-term-dir { color: var(--t-accent); font-weight: 600; }
+.d-term-err { color: var(--t-err); }
+.d-term-out > .d-term-ff { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 3ch; white-space: normal; }
+.d-term-logo { white-space: pre; line-height: 1; color: var(--t-accent); }
+.d-term-facts { flex: 1 1 30ch; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (pointer: coarse) { .d-term { font-size: 16px; } } /* 16px keeps phones from zooming into the input */
+
+/* rm -rf: the page empties. A reload brings it back. */
+.lp-wiping body { pointer-events: none; }
+.lp-wiped body > * { display: none !important; }

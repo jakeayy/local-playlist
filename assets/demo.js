@@ -83,6 +83,7 @@
     sb: Object.fromEntries(SB_CATS.map((c) => [c[0], c[3]])),
     downloads: [],       // tracks waiting or downloading
     busy: false,         // a link is being "looked up"
+    closed: false,       // the window is closed and the desktop shows (easter egg)
   };
 
   // --- Helpers ------------------------------------------------------------------------------------
@@ -626,6 +627,9 @@
       case 'login':
         toast('In the app, this opens a small login window. The demo has no accounts.');
         break;
+      case 'desk-app': openWindow(el); break;
+      case 'desk-term': openTerm(el); break;
+      case 'term-close': closeTerm(); break;
       default: break;
     }
   });
@@ -685,6 +689,7 @@
     renderAll();
   }
   document.querySelectorAll('[data-try]').forEach((btn) => btn.addEventListener('click', () => {
+    if (S.closed) openWindow(null, true);
     bringDemoIntoView();
     switch (btn.dataset.try) {
       case 'play':
@@ -915,7 +920,7 @@
     }
   }
 
-  const vizActive = () => S.view === 'viz' && onScreen && !document.hidden;
+  const vizActive = () => S.view === 'viz' && onScreen && !document.hidden && !S.closed;
   function frame(now) {
     raf = 0;
     if (!vizActive()) return;
@@ -933,6 +938,493 @@
     new IntersectionObserver((entries) => { onScreen = entries[0].isIntersecting; kickViz(); }).observe(demo);
   }
   document.addEventListener('visibilitychange', kickViz);
+
+  // --- Easter egg -----------------------------------------------------------------------------------
+  // The window's first dot closes it. It stays a plain dot on purpose (no button, cursor, hover or
+  // focus), so it's a surprise. Closed, the demo shows a desktop with the app, which opens the window
+  // again, and a terminal with a tiny shell, where `rm -rf` removes the whole page. The window's state
+  // survives closing; nothing is saved, so a reload brings everything back.
+  const HOME = ['home', 'visitor'];
+  const DESKTOP_FILES = {
+    'local-playlist.desktop': '[Desktop Entry]\nType=Application\nName=Local Playlist\nExec=local-playlist\nIcon=local-playlist',
+    'terminal.desktop': '[Desktop Entry]\nType=Application\nName=Terminal\nExec=terminal',
+  };
+  let desk = null;
+  let term = null;
+  let deskClock = 0;
+  let winBusy = false;
+  let wiping = false;
+  let cwd = HOME.slice();
+  const hist = [];
+  let histAt = 0;
+
+  const winParts = () => Array.from(demo.children).filter((el) => el.matches('.d-chrome, .d-body, .d-player'));
+  const settle = (anims) => Promise.all(anims.map((a) => a.finished.catch(() => {})));
+  // Scale every part of the window around the same point (in the demo's padding box), so they move as one.
+  function originAt(parts, x, y) {
+    parts.forEach((p) => { p.style.transformOrigin = (x - p.offsetLeft) + 'px ' + (y - p.offsetTop) + 'px'; });
+  }
+
+  function buildDesk() {
+    if (desk) return;
+    demo.insertAdjacentHTML('beforeend',
+      '<div class="d-desk" id="d-desk" role="group" aria-label="Desktop" hidden>' +
+        '<div class="d-desk-icons">' +
+          '<button class="d-desk-icon" type="button" data-act="desk-app"><img src="img/icon.svg" width="48" height="48" alt=""><span>Local Playlist</span></button>' +
+          '<button class="d-desk-icon" type="button" data-act="desk-term"><span class="d-desk-glyph"><svg class="i" viewBox="3 3 18 18" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/></svg></span><span>Terminal</span></button>' +
+        '</div>' +
+        '<div class="d-term" id="d-term" role="group" aria-label="Terminal" hidden>' +
+          '<div class="d-term-bar" id="d-term-bar">' +
+            '<button class="d-term-dot" type="button" data-act="term-close" aria-label="Close terminal"></button><span class="d-term-dot"></span><span class="d-term-dot"></span>' +
+            '<span class="d-term-title" id="d-term-title"></span>' +
+          '</div>' +
+          '<div class="d-term-body" id="d-term-body">' +
+            '<div class="d-term-out" id="d-term-out" role="log"></div>' +
+            '<form class="d-term-line" id="d-term-form"><span id="d-term-ps"></span>' +
+              '<input class="d-term-in" id="d-term-in" type="text" aria-label="Command" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go">' +
+            '</form>' +
+          '</div>' +
+        '</div>' +
+        '<div class="d-desk-bar"><span id="d-desk-clock"></span></div>' +
+      '</div>');
+    desk = $('d-desk');
+    term = $('d-term');
+    const input = $('d-term-in');
+    $('d-term-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const line = input.value;
+      input.value = '';
+      run(line);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (!hist.length) return;
+        e.preventDefault();
+        histAt = Math.max(0, Math.min(hist.length, histAt + (e.key === 'ArrowUp' ? -1 : 1)));
+        input.value = hist[histAt] || '';
+      } else if (e.ctrlKey && (e.key === 'c' || e.key === 'C') && input.selectionStart === input.selectionEnd) {
+        e.preventDefault();
+        promptLine(input.value + '^C');
+        input.value = '';
+        histAt = hist.length;
+      } else if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) {
+        e.preventDefault();
+        $('d-term-out').textContent = '';
+      }
+    });
+    $('d-term-body').addEventListener('click', () => {
+      if (!$('d-term-form').hidden && !String(window.getSelection())) input.focus({ preventScroll: true });
+    });
+    // Move the terminal by its title bar, keeping the bar on the desktop.
+    const bar = $('d-term-bar');
+    bar.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      const sx = e.clientX;
+      const sy = e.clientY;
+      const l = term.offsetLeft;
+      const t = term.offsetTop;
+      bar.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        term.style.left = Math.max(0, Math.min(desk.clientWidth - term.offsetWidth, l + ev.clientX - sx)) + 'px';
+        term.style.top = Math.max(0, Math.min(desk.clientHeight - 64, t + ev.clientY - sy)) + 'px';
+      };
+      const up = () => {
+        bar.removeEventListener('pointermove', move);
+        bar.removeEventListener('pointerup', up);
+        bar.removeEventListener('pointercancel', up);
+      };
+      bar.addEventListener('pointermove', move);
+      bar.addEventListener('pointerup', up);
+      bar.addEventListener('pointercancel', up);
+    });
+  }
+
+  function tickDesk() {
+    const now = new Date();
+    $('d-desk-clock').textContent = now.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + '  ' +
+      now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function closeWindow() {
+    if (S.closed || winBusy) return;
+    buildDesk();
+    winBusy = true;
+    S.closed = true;
+    hideToast();
+    desk.hidden = false;
+    tickDesk();
+    clearInterval(deskClock);
+    deskClock = setInterval(tickDesk, 10000);
+    const parts = winParts();
+    originAt(parts, demo.clientWidth / 2, demo.clientHeight / 2);
+    const anims = parts.map((p) => p.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.92)' }],
+      { duration: reduceMotion.matches ? 0 : 200, easing: 'ease-in', fill: 'forwards' }));
+    settle(anims).then(() => {
+      // Opened again meanwhile (a "Things to try" button): just drop the animation.
+      if (S.closed) demo.dataset.closed = '';
+      anims.forEach((a) => a.cancel());
+      parts.forEach((p) => { p.style.transformOrigin = ''; });
+      winBusy = false;
+      if (S.closed) desk.querySelector('[data-act="desk-app"]').focus({ preventScroll: true });
+    });
+  }
+
+  // Open the window again, growing out of `from` (the desktop icon) unless `instant`.
+  function openWindow(from, instant) {
+    if (!S.closed || (winBusy && !instant)) return;
+    const box = demo.getBoundingClientRect();
+    const f = from && from.getBoundingClientRect();
+    S.closed = false;
+    delete demo.dataset.closed;
+    const parts = winParts();
+    const finish = () => {
+      winBusy = false;
+      if (S.closed) return;
+      const refocus = desk.contains(document.activeElement);
+      desk.hidden = true;
+      clearInterval(deskClock);
+      if (refocus) $('d-play').focus({ preventScroll: true });
+      // Measured mid-animation, the canvas came out scaled down: size it at its real size.
+      if (S.view === 'viz') { sizeCanvas(); kickViz(); }
+    };
+    if (instant || !f || reduceMotion.matches) finish();
+    else {
+      winBusy = true;
+      originAt(parts, f.left + f.width / 2 - box.left - demo.clientLeft, f.top + f.height / 2 - box.top - demo.clientTop);
+      settle(parts.map((p) => p.animate([{ opacity: 0, transform: 'scale(.05)' }, { opacity: 1, transform: 'none' }],
+        { duration: 320, easing: 'cubic-bezier(.2, .8, .2, 1)' }))).then(() => {
+        parts.forEach((p) => { p.style.transformOrigin = ''; });
+        finish();
+      });
+    }
+    kickViz();
+  }
+
+  function openTerm(from) {
+    const input = $('d-term-in');
+    if (!term.hidden) { input.focus({ preventScroll: true }); return; }
+    $('d-term-out').textContent = '';
+    cwd = HOME.slice();
+    updatePrompt();
+    term.hidden = false;
+    const left = (desk.clientWidth - term.offsetWidth) / 2 + (desk.clientWidth > 720 ? 48 : 0);
+    // Too narrow to sit beside the icons (phones): below them instead, as far as the panel allows.
+    const beside = desk.clientWidth >= term.offsetWidth + 130;
+    const top = beside ? (desk.clientHeight - 34 - term.offsetHeight) / 2 : Math.min(desk.clientHeight - 46 - term.offsetHeight, 212);
+    term.style.left = Math.max(0, Math.min(desk.clientWidth - term.offsetWidth, left)) + 'px';
+    term.style.top = Math.max(12, top) + 'px';
+    if (from && !reduceMotion.matches) {
+      const f = from.getBoundingClientRect();
+      const t = term.getBoundingClientRect();
+      term.style.transformOrigin = (f.left + f.width / 2 - t.left) + 'px ' + (f.top + f.height / 2 - t.top) + 'px';
+      term.animate([{ opacity: 0, transform: 'scale(.1)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+    }
+    input.focus({ preventScroll: true });
+  }
+
+  function closeTerm() {
+    if (term.hidden || wiping) return;
+    term.style.transformOrigin = '50% 50%';
+    const a = term.animate([{ opacity: 1 }, { opacity: 0, transform: 'scale(.94)' }],
+      { duration: reduceMotion.matches ? 0 : 160, easing: 'ease-in', fill: 'forwards' });
+    settle([a]).then(() => {
+      term.hidden = true;
+      a.cancel();
+      if (!S.closed) return;
+      desk.querySelector('[data-act="desk-term"]').focus({ preventScroll: true });
+    });
+  }
+
+  // --- The shell -------------------------------------------------------------------------------------
+  // A pretend file system: folders are objects, files are strings. The music folder follows the demo's
+  // playlists and the tracks it has "saved", named the way the app names them.
+  function fsRoot() {
+    const music = {};
+    for (const p of playlists) {
+      const dir = {};
+      for (const t of p.tracks) {
+        if (t.saved) dir[platformName(t.platform) + '-' + t.key.replace(/^demo:/, 'demo').replace(/^[a-z]+:/, '').replace(/[^\w-]/g, '_') + '.m4a'] = '';
+      }
+      music[p.name] = dir;
+    }
+    return { bin: {}, etc: {}, home: { visitor: { Desktop: Object.assign({}, DESKTOP_FILES), Music: { 'local-playlist': music } } }, tmp: {}, usr: {} };
+  }
+  function resolve(arg) {
+    let parts;
+    if (!arg || arg === '~') return HOME.slice();
+    if (arg.startsWith('~/')) parts = HOME.concat(arg.slice(2).split('/'));
+    else if (arg.startsWith('/')) parts = arg.split('/');
+    else parts = cwd.concat(arg.split('/'));
+    const path = [];
+    for (const p of parts) {
+      if (p === '..') path.pop();
+      else if (p && p !== '.') path.push(p);
+    }
+    return path;
+  }
+  function lookup(path) {
+    let node = fsRoot();
+    for (const p of path) {
+      if (typeof node !== 'object' || !Object.prototype.hasOwnProperty.call(node, p)) return undefined;
+      node = node[p];
+    }
+    return node;
+  }
+  function pretty(path) {
+    const s = '/' + path.join('/');
+    const home = '/' + HOME.join('/');
+    return s === home || s.startsWith(home + '/') ? '~' + s.slice(home.length) : s;
+  }
+  const quote = (name) => (/[\s'"]/.test(name) ? "'" + name.replace(/'/g, "'\\''") + "'" : name);
+  function words(line) {
+    const found = [];
+    const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+    let m;
+    while ((m = re.exec(line))) found.push(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]);
+    return found;
+  }
+
+  // A line of output: a string, or [text, class, colour] pieces.
+  function lineOf(content, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = 'd-term-' + cls;
+    if (typeof content === 'string') line.textContent = content || ' ';
+    else for (const [text, c, colour] of content) {
+      const s = document.createElement('span');
+      if (c) s.className = 'd-term-' + c;
+      if (colour) s.style.color = colour;
+      s.textContent = text;
+      line.append(s);
+    }
+    return line;
+  }
+  function emit(el) {
+    const box = $('d-term-out');
+    box.append(el);
+    while (box.childElementCount > 300) box.firstElementChild.remove();
+    const body = $('d-term-body');
+    body.scrollTop = body.scrollHeight;
+  }
+  const out = (content, cls) => emit(lineOf(content, cls));
+  const promptPieces = () => [['visitor@desktop', 'u'], [':', ''], [pretty(cwd), 'p'], ['$ ', '']];
+  const promptLine = (text) => out(promptPieces().concat([[text, '']]));
+  function updatePrompt() {
+    const ps = $('d-term-ps');
+    ps.textContent = '';
+    for (const [text, c] of promptPieces()) {
+      const s = document.createElement('span');
+      if (c) s.className = 'd-term-' + c;
+      s.textContent = text;
+      ps.append(s);
+    }
+    $('d-term-title').textContent = 'visitor@desktop: ' + pretty(cwd);
+  }
+
+  // Any `rm` with both -r and -f, in whatever spelling, with or without a target.
+  function isWipe(args) {
+    let r = false;
+    let f = false;
+    for (const a of args) {
+      const w = a.toLowerCase();
+      if (w === '--recursive') r = true;
+      else if (w === '--force') f = true;
+      else if (/^-[a-z]+$/.test(w)) { r = r || w.includes('r'); f = f || w.includes('f'); }
+    }
+    return r && f;
+  }
+
+  function run(line) {
+    promptLine(line);
+    const text = line.trim();
+    if (text) hist.push(text);
+    histAt = hist.length;
+    let args = words(text);
+    if (!args.length) return;
+    let cmd = args[0].toLowerCase();
+    const sudo = cmd === 'sudo';
+    if (sudo) {
+      args = args.slice(1);
+      cmd = (args[0] || '').toLowerCase();
+      if (!cmd) { out('usage: sudo command', 'err'); return; }
+    }
+    if (cmd === 'rm' && isWipe(args.slice(1))) {
+      wipe(args.slice(1).some((a) => a.toLowerCase() === '--verbose' || /^-[a-z]*v/i.test(a)));
+      return;
+    }
+    if (sudo) { out('visitor is not in the sudoers file. This incident will be reported.', 'err'); return; }
+    const ops = args.slice(1).filter((a) => !a.startsWith('-'));
+    switch (cmd) {
+      case 'help':
+        out('Commands: cat  cd  clear  date  echo  exit  fastfetch  help  history  local-playlist  ls  pwd  whoami');
+        break;
+      case 'fastfetch': fastfetch(); break;
+      case 'ls': {
+        const targets = ops.length ? ops : ['.'];
+        targets.forEach((t, k) => {
+          const node = lookup(resolve(t));
+          if (node === undefined) { out("ls: cannot access '" + t + "': No such file or directory", 'err'); return; }
+          if (typeof node !== 'object') { out(quote(t)); return; }
+          if (targets.length > 1) out((k ? '\n' : '') + t + ':');
+          const names = Object.keys(node).sort((a, b) => a.localeCompare(b));
+          const pieces = [];
+          names.forEach((n, j) => {
+            if (j) pieces.push(['  ', '']);
+            pieces.push([quote(n), typeof node[n] === 'object' ? 'dir' : '']);
+          });
+          if (pieces.length) out(pieces);
+        });
+        break;
+      }
+      case 'cd': {
+        const path = resolve(ops[0]);
+        const node = lookup(path);
+        if (node === undefined) out('cd: ' + ops[0] + ': No such file or directory', 'err');
+        else if (typeof node !== 'object') out('cd: ' + ops[0] + ': Not a directory', 'err');
+        else { cwd = path; updatePrompt(); }
+        break;
+      }
+      case 'pwd': out('/' + cwd.join('/')); break;
+      case 'cat':
+        if (!ops.length) out('cat: which file?', 'err');
+        ops.forEach((o) => {
+          const node = lookup(resolve(o));
+          if (node === undefined) out('cat: ' + o + ': No such file or directory', 'err');
+          else if (typeof node === 'object') out('cat: ' + o + ': Is a directory', 'err');
+          else if (!node) out('cat: ' + o + ": it's music, not text. Play it in Local Playlist.", 'err');
+          else out(node);
+        });
+        break;
+      case 'echo': out(args.slice(1).join(' ')); break;
+      case 'whoami': out('visitor'); break;
+      case 'date': out(new Date().toString()); break;
+      case 'history': hist.forEach((h, i) => out(String(i + 1).padStart(4) + '  ' + h)); break;
+      case 'clear': $('d-term-out').textContent = ''; break;
+      case 'exit': closeTerm(); break;
+      case 'local-playlist': openWindow(desk.querySelector('[data-act="desk-app"]')); break;
+      case 'rm': {
+        if (!ops.length) { out("rm: missing operand\nTry 'rm --help' for more information.", 'err'); break; }
+        const recursive = args.some((a) => a.toLowerCase() === '--recursive' || /^-[a-z]*r/i.test(a));
+        ops.forEach((o) => {
+          const node = lookup(resolve(o));
+          const why = node === undefined ? 'No such file or directory' : typeof node === 'object' && !recursive ? 'Is a directory' : 'Permission denied';
+          out("rm: cannot remove '" + o + "': " + why, 'err');
+        });
+        break;
+      }
+      default: out(args[0] + ': command not found', 'err');
+    }
+  }
+
+  // A pretend fastfetch: the app's icon and a few facts about this "computer", mostly the demo's own.
+  const LOGO = [
+    '╭──────────────────╮',
+    '│                  │',
+    '│  ───────────  │  │',
+    '│               │  │',
+    '│  ───────      │  │',
+    '│            ╭──┤  │',
+    '│            │  │  │',
+    '│  ───────   ╰──╯  │',
+    '│                  │',
+    '╰──────────────────╯',
+  ];
+  const SWATCHES = ['#F2B8B5', '#FFB59E', '#E0A200', '#81C995', '#8FD3E8', '#AFC6FF', '#D0BCFF', '#EFB8C8'];
+  function fastfetch() {
+    const ua = navigator.userAgent;
+    const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad|iPod/.test(ua) ? 'iOS' : /Windows/.test(ua) ? 'Windows'
+      : /CrOS/.test(ua) ? 'ChromeOS' : /Mac OS/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : 'Unknown';
+    const secs = Math.floor(performance.now() / 1000);
+    const count = (k, unit) => k + ' ' + unit + (k === 1 ? '' : 's');
+    const uptime = secs < 60 ? count(secs, 'sec') : secs < 3600 ? count(Math.floor(secs / 60), 'min')
+      : count(Math.floor(secs / 3600), 'hour') + ', ' + count(Math.floor((secs % 3600) / 60), 'min');
+    const tracks = playlists.reduce((a, p) => a + p.tracks.length, 0);
+    const saved = playlists.reduce((a, p) => a + p.tracks.filter((t) => t.saved).length, 0);
+    const site = document.documentElement.dataset.theme;
+    const dark = S.dtheme === 'system' ? site === 'dark' || (!site && window.matchMedia('(prefers-color-scheme: dark)').matches) : S.dtheme === 'dark';
+    const facts = [
+      ['OS', os + ' (in a browser tab)'],
+      ['Host', location.hostname || 'localhost'],
+      ['Uptime', uptime],
+      ['Packages', '1 (local-playlist)'],
+      ['Shell', 'demo.js'],
+      ['Display', screen.width + 'x' + screen.height],
+      ['Theme', 'Local Playlist ' + (dark ? 'Dark' : 'Light')],
+      ['CPU', navigator.hardwareConcurrency ? navigator.hardwareConcurrency + ' threads' : 'yes'],
+      ['Music', tracks + ' tracks in ' + playlists.length + ' playlists, ' + saved + ' saved'],
+      ['Playing', S.current && !S.paused ? S.current.title + ' – ' + S.current.artist : 'nothing'],
+    ];
+    const rows = [[['visitor', 'u'], ['@', ''], ['desktop', 'u']], [['-'.repeat(15), '']]]
+      .concat(facts.map(([k, v]) => [[k + ': ', 'p'], [v, '']]), [' ', SWATCHES.map((c) => ['███', '', c])]);
+    // The logo has its own column with a tight line height, so its lines join up. On narrow
+    // terminals the facts wrap below it.
+    const box = document.createElement('div');
+    box.className = 'd-term-ff';
+    const logo = document.createElement('div');
+    logo.className = 'd-term-logo';
+    logo.textContent = LOGO.join('\n');
+    const list = document.createElement('div');
+    list.className = 'd-term-facts';
+    rows.forEach((row) => list.append(lineOf(row)));
+    box.append(logo, list);
+    emit(box);
+  }
+
+  // --- rm -rf: what's in view disappears piece by piece, the terminal last, then the rest of the page. --
+  function pathOf(el) {
+    const name = (n) => n.id || n.tagName.toLowerCase();
+    const segs = [];
+    for (let p = el.parentElement; p && p !== document.body && segs.length < 2; p = p.parentElement) {
+      if (p.id || /^(HEADER|MAIN|FOOTER|SECTION|NAV|ASIDE|UL|OL|FORM)$/.test(p.tagName)) segs.unshift(name(p));
+    }
+    const cls = typeof el.className === 'string' && el.className.split(/\s+/)[0];
+    return '/' + segs.concat(el.id || el.tagName.toLowerCase() + (cls ? '.' + cls : '')).join('/');
+  }
+
+  // Like rm, quiet unless asked to be verbose (-v). There's no undo: a reload brings the page back.
+  function wipe(verbose) {
+    if (wiping) return;
+    wiping = true;
+    const root = document.documentElement;
+    $('d-term-form').hidden = true;
+    root.classList.add('lp-wiping');
+
+    // What's in view, in small pieces: leaves, media and controls, or small blocks.
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const units = [];
+    (function walk(el) {
+      for (const c of el.children) {
+        if (c === term || /^(SCRIPT|STYLE|LINK|META|NOSCRIPT|TEMPLATE)$/.test(c.tagName)) continue;
+        if (c.contains(term)) { walk(c); continue; }
+        if (!c.getClientRects().length) continue;
+        const r = c.getBoundingClientRect();
+        if (r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue;
+        const area = r.width * r.height;
+        const small = /^(IMG|SVG|PICTURE|VIDEO|CANVAS|INPUT|BUTTON|SELECT|TEXTAREA)$/i.test(c.tagName) ? area < vw * vh * 0.5
+          : c.firstElementChild ? r.height <= 120 && r.width <= vw * 0.7 : area < vw * vh * 0.3;
+        if (small) units.push(c); else walk(c);
+      }
+    })(document.body);
+    for (let i = units.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [units[i], units[j]] = [units[j], units[i]];
+    }
+
+    const n = units.length;
+    const span = Math.min(2000, Math.max(1000, n * 25));
+    units.forEach((u, i) => setTimeout(() => {
+      u.style.visibility = 'hidden';
+      if (verbose) out("removed '" + pathOf(u) + "'");
+    }, (i / Math.max(1, n)) * span));
+    if (verbose) setTimeout(() => out("removed directory '/'"), span + 100);
+    setTimeout(() => { term.style.visibility = 'hidden'; }, span + 500);
+    setTimeout(() => {
+      root.classList.add('lp-wiped');
+      root.classList.remove('lp-wiping');
+    }, span + 900);
+  }
+
+  demo.querySelector('.d-chrome .d-dot').addEventListener('click', closeWindow);
 
   // --- Start ----------------------------------------------------------------------------------------
   renderAll();
