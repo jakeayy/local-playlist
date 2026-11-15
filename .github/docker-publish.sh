@@ -23,4 +23,16 @@ docker build --target prebuilt --file Dockerfile "${tags[@]}" \
     "$context"
 
 echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-for tag; do docker push "$image:$tag"; done
+# ghcr.io now and then fails a push with "unknown blob"; pushing again gets through.
+push() {
+    local attempt
+    for attempt in 1 2 3; do
+        docker push "$1" && return 0
+        if [ "$attempt" -lt 3 ]; then
+            echo "Pushing $1 failed; retrying in $((attempt * 15)) s" >&2
+            sleep $((attempt * 15))
+        fi
+    done
+    return 1
+}
+for tag; do push "$image:$tag"; done
