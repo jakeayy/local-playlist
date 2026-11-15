@@ -101,6 +101,21 @@ Pre-releases are builds of the newest changes. They may be less stable.
 4. **Click a track to play it.** It's saved to your Music folder as it plays (Settings →
    Storage shows where, and lets you change it).
 
+<details>
+<summary>Which links work?</summary>
+
+- **YouTube / YouTube Music tracks:** `youtube.com/watch?v=…`, `youtu.be/…`,
+  `youtube.com/shorts/…`, `music.youtube.com/watch?v=…`
+- **YouTube / YouTube Music playlists:** public or unlisted (`…/playlist?list=…`)
+- **SoundCloud:** tracks (`soundcloud.com/artist/track`), sets and albums, a profile's
+  tracks, a profile's public likes (`soundcloud.com/artist/likes`), and `on.soundcloud.com`
+  short links
+
+With a login, also private playlists, YouTube *Liked videos*, *Liked music* and *Watch
+later*, and your own SoundCloud likes.
+
+</details>
+
 To use private playlists or your likes, open **Settings & accounts** and log in. If logging
 in doesn't work for you, you can paste cookies from your browser instead; see
 [ADDING-COOKIES.md](ADDING-COOKIES.md).
@@ -111,12 +126,33 @@ in doesn't work for you, you can paste cookies from your browser instead; see
   playlists and settings are a file on your computer.
 - **The app only talks to** YouTube and SoundCloud (to look up and download tracks),
   SponsorBlock (if turned on), and GitHub (to download yt-dlp and QuickJS).
-- **SponsorBlock never learns what you watch:** the app asks about a group of many videos
-  at once and picks out the right one itself.
+- **SponsorBlock isn't told which video you're playing:** the app asks about a group of
+  many videos at once and picks out the right one itself.
 - **Logging in is optional.** Without it, the app uses only what YouTube and SoundCloud
   show to any visitor, and sends no cookies. If you do log in, your login stays on your
   computer, encrypted, with the key in your system keyring (or, without one, in a private
   file). **Log out** deletes it.
+
+<details>
+<summary>Technical details</summary>
+
+- Your library is a plain JSON file, `library.json`, in the app's data folder (on Linux
+  `~/.local/share/local-playlist/`; Settings shows the exact path).
+- Logins are stored in `credentials.bin` next to it, encrypted with ChaCha20-Poly1305. The
+  key lives in the system keyring (Secret Service / Windows Credential Manager / macOS
+  Keychain), or in a private key file if there is no keyring.
+- Metadata comes from each platform's public web endpoints, the same ones their websites
+  use for logged-out visitors: YouTube InnerTube and oEmbed, and SoundCloud api-v2 with the
+  public web `client_id`. Unless you log in, no cookies are sent or stored.
+- Audio is downloaded by yt-dlp into your music folder and played locally. Removed tracks
+  wait in the cache folder (on Linux `~/.cache/local-playlist/removed/`) up to the size
+  limit set in Settings.
+- Network destinations: YouTube, SoundCloud and their CDNs; SponsorBlock
+  (`sponsor.ajay.app`, unless turned off), which gets only the first 4 characters of the
+  video id's SHA-256 hash; GitHub, to download or update yt-dlp and QuickJS; and, only on
+  systems without a ready-made yt-dlp build, PyPI.
+
+</details>
 
 ## Web version (self-hosted)
 
@@ -136,6 +172,9 @@ Or download the `…-server` version from the Releases page and run
 
 - A password (8 characters or more) protects it, and only YouTube and SoundCloud links are
   accepted.
+- It doesn't log which links are requested, and deletes cached audio after two hours
+  without use (`--cache-minutes`).
+- It downloads yt-dlp and QuickJS on first start and updates yt-dlp daily.
 - Run it on a home connection: YouTube often blocks servers in data centres.
 - To use it from outside your network, put it behind HTTPS (a reverse proxy).
 - All options: `local-playlist --server --help`.
