@@ -8,6 +8,11 @@
 //! (`Lyrics::line_progress`).
 //! Sparks drift off the edge of the fill while it moves ([`Sparks`]).
 //!
+//! Timings can be shifted per song (saved in the library), for music videos
+//! whose intro the lyrics weren't timed with: − / + in the header, or
+//! right-click a line as it's sung. Lyrics timed for another cut of the song
+//! say so in the header, as a hint that they may need shifting.
+//!
 //! It is its own view, like the seek row: while a song plays only the
 //! highlight moves, so it checks the position every 50 ms while shown and
 //! redraws (just itself) when the line or word changes. Lyrics are looked up
@@ -25,6 +30,10 @@ const LEAD_MS: u32 = 60;
 /// After the user scrolls, the page stops following the song for a while.
 const FOLLOW_PAUSE_MS: f64 = 4000.0;
 const POLL_MS: u64 = 50;
+/// Offset steps (− / +; with Shift the larger one).
+const NUDGE_MS: i32 = 500;
+const BIG_NUDGE_MS: i32 = 5000;
+const MAX_OFFSET_MS: i32 = 10 * 60 * 1000;
 /// Steps of a line's fill that are drawn (it moves on at most every poll).
 const FILL_STEPS: f32 = 256.0;
 /// Characters the edge of a line's fill fades over.
@@ -48,8 +57,10 @@ enum Status {
 
 pub(super) struct LyricsView {
     app: WeakEntity<LocalPlaylist>,
-    /// Track (platform, id) the lyrics are for.
+    /// Track (platform, id) the lyrics are for, and its file key (which
+    /// its offset is saved under).
     track: Option<(Platform, String)>,
+    key: String,
     status: Status,
     scroll: ScrollHandle,
     shown: Highlight,
@@ -73,6 +84,7 @@ impl LyricsView {
         Self {
             edge,
             sparks,
+            key: String::new(),
             app,
             track: None,
             status: Status::Idle,
@@ -100,6 +112,7 @@ impl LyricsView {
             return;
         }
         self.track = Some(key.clone());
+        self.key = track.file_key();
         self.status = Status::Loading;
         self.shown = Highlight::default();
         self.centred = None;
@@ -133,11 +146,43 @@ impl LyricsView {
         .detach();
     }
 
+    /// The lyrics, if they're timed (and so follow the song).
     fn timed(&self) -> Option<&Arc<Lyrics>> {
         match &self.status {
             Status::Ready(Some(l)) if l.synced => Some(l),
             _ => None,
         }
+    }
+
+    /// The user's offset for this song.
+    fn offset(&self, cx: &App) -> Option<i32> {
+        let app = self.app.upgrade()?;
+        app.read(cx).library.lyrics_offsets.get(&self.key).copied()
+    }
+
+    fn set_offset(&mut self, offset: Option<i32>, cx: &mut Context<Self>) {
+        let Some(app) = self.app.upgrade() else { return };
+        let offset = offset.map(|o| o.clamp(-MAX_OFFSET_MS, MAX_OFFSET_MS));
+        let key = self.key.clone();
+        app.update(cx, |app, cx| app.set_lyrics_offset(&key, offset, cx));
+        // Back to following the song, at its new place.
+        self.user_scrolled_ms = 0.0;
+        self.centred = None;
+        cx.notify();
+    }
+
+    /// Shift the lyrics by one step later (`dir` 1) or earlier (-1).
+    fn nudge(&mut self, dir: i32, big: bool, cx: &mut Context<Self>) {
+        let step = if big { BIG_NUDGE_MS } else { NUDGE_MS };
+        let offset = self.offset(cx).unwrap_or(0) + dir * step;
+        self.set_offset(Some(offset), cx);
+    }
+
+    /// The line starting at `start_ms` is being sung now: shift the lyrics so it is.
+    fn sync_line(&mut self, start_ms: u32, cx: &mut Context<Self>) {
+        let Some(app) = self.app.upgrade() else { return };
+        let position = app.read(cx).position_ms() as i64;
+        self.set_offset(Some((position - start_ms as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32), cx);
     }
 
     /// Check the position while the page is shown with timed lyrics.
@@ -164,11 +209,12 @@ impl LyricsView {
             let app = app.read(cx);
             (app.panel == Panel::Lyrics && app.view == View::Playlist && app.window.is_some(), app.position_ms())
         });
+        let offset = self.offset(cx);
         let (Some((true, ms)), Some(lyrics)) = (visible, self.timed().cloned()) else {
             self.polling = false;
             return false;
         };
-        let now = highlight(&lyrics, ms);
+        let now = highlight(&lyrics, ms, offset.unwrap_or(0));
         let mut redraw = now != self.shown;
         if let Some(i) = now.line
             && self.centred != Some(i)
@@ -211,19 +257,22 @@ impl LyricsView {
         Some(y.min(px(0.)).max(-max))
     }
 
+    /// Play from where the lyrics are at `ms` (shifted by the offset).
     fn seek_to(&mut self, ms: u32, cx: &mut Context<Self>) {
         // Follow the song again straight away.
         self.user_scrolled_ms = 0.0;
         self.centred = None;
+        let to = (ms as i64 + self.offset(cx).unwrap_or(0) as i64).max(0) as u64;
         if let Some(app) = self.app.upgrade() {
-            app.update(cx, |app, cx| app.seek_to(Duration::from_millis(ms as u64), cx));
+            app.update(cx, |app, cx| app.seek_to(Duration::from_millis(to), cx));
         }
     }
 }
 
-/// The highlight at `ms`.
-fn highlight(lyrics: &Lyrics, ms: u32) -> Highlight {
-    let ms = ms + LEAD_MS;
+/// The highlight at `ms` into the track, with the lyrics `offset` ms later.
+fn highlight(lyrics: &Lyrics, ms: u32, offset: i32) -> Highlight {
+    let at = ms as i64 + LEAD_MS as i64 - offset as i64;
+    let Ok(ms) = u32::try_from(at) else { return Highlight::default() };
     let Some(i) = lyrics.line_at(ms) else { return Highlight::default() };
     let fill = (lyrics.line_progress(i, ms) * FILL_STEPS).round() as u16;
     Highlight { line: Some(i), fill }
@@ -272,6 +321,7 @@ impl Render for LyricsView {
             let playing = app.state == PlayState::Playing && app.audio.as_ref().is_some_and(|a| !a.is_paused());
             (app.now.as_ref().map(|n| n.track.clone()), app.position_ms(), app.now_cover.clone(), playing)
         };
+        let offset = self.offset(cx);
         // Set again by the line being sung, if it's drawn.
         self.edge.set(None);
         self.ensure_polling(cx);
@@ -293,7 +343,8 @@ impl Render for LyricsView {
             })
             .when_some(self.source_note(), |d, note| {
                 d.child(div().flex_none().text_xs().text_color(theme.muted_foreground).child(note))
-            });
+            })
+            .when_some(self.render_offset(offset, &theme, cx), |d, controls| d.child(controls));
 
         let message = |icon: IconName, title: SharedString, detail: Option<SharedString>| {
             v_flex()
@@ -336,34 +387,104 @@ impl Render for LyricsView {
             Status::Ready(Some(l)) if l.instrumental => {
                 message(IconName::AudioLines, "Instrumental".into(), None).into_any_element()
             }
-            Status::Ready(Some(l)) => self.render_lines(l.clone(), ms, playing, &theme, cx).into_any_element(),
+            Status::Ready(Some(l)) => self.render_lines(l.clone(), ms, offset, playing, &theme, cx).into_any_element(),
         };
         div().size_full().child(v_flex().size_full().child(header).child(body))
     }
 }
 
 impl LyricsView {
-    /// "From LRCLIB", noting untimed lyrics.
+    /// "From LRCLIB", noting untimed lyrics and timings for another cut.
     fn source_note(&self) -> Option<String> {
-        match &self.status {
-            Status::Ready(Some(l)) if !l.instrumental => Some(if l.synced {
-                format!("Lyrics from {}", l.source.label())
-            } else {
-                format!("Lyrics from {} · not timed", l.source.label())
-            }),
-            _ => None,
+        let Status::Ready(Some(l)) = &self.status else { return None };
+        let source = l.source.label();
+        match (l.synced, l.other_cut) {
+            _ if l.instrumental => None,
+            (false, _) => Some(format!("Lyrics from {source} · not timed")),
+            (true, None) => Some(format!("Lyrics from {source}")),
+            (true, Some(d)) => Some(format!(
+                "Lyrics from {source} · timed for a version {} s {}",
+                d.abs(),
+                if d > 0 { "longer" } else { "shorter" }
+            )),
         }
+    }
+
+    /// The timing offset: − / +, how much, and a reset (timed lyrics only).
+    fn render_offset(
+        &self,
+        offset: Option<i32>,
+        theme: &gpui_kit::component::Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let Status::Ready(Some(l)) = &self.status else { return None };
+        if !l.synced || l.instrumental {
+            return None;
+        }
+        let label = match offset {
+            None => "0.0 s".to_string(),
+            Some(o) => format!(
+                "{}{:.1} s",
+                if o > 0 {
+                    "+"
+                } else if o < 0 {
+                    "−"
+                } else {
+                    ""
+                },
+                o.abs() as f32 / 1000.0
+            ),
+        };
+        let step =
+            |id: &'static str, icon: IconName, dir: i32, tip: &'static str| {
+                Button::new(id).ghost().xsmall().icon(icon).tooltip(tip).on_click(
+                    cx.listener(move |this, ev: &ClickEvent, _, cx| this.nudge(dir, ev.modifiers().shift, cx)),
+                )
+            };
+        Some(
+            h_flex()
+                .flex_none()
+                .gap_0p5()
+                .child(step("lyrics-earlier", IconName::Minus, -1, "Lyrics earlier (Shift: 5 s)"))
+                .child(
+                    div()
+                        .id("lyrics-offset")
+                        .min_w(px(64.))
+                        .text_center()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(label)
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(
+                                "Lyrics timing for this song. Right-click a line as it's sung to sync to it.",
+                            )
+                            .build(window, cx)
+                        }),
+                )
+                .child(step("lyrics-later", IconName::Plus, 1, "Lyrics later (Shift: 5 s)"))
+                .when(offset.is_some(), |d| {
+                    d.child(
+                        Button::new("lyrics-offset-reset")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::X)
+                            .tooltip("Reset timing")
+                            .on_click(cx.listener(|this, _, _, cx| this.set_offset(None, cx))),
+                    )
+                }),
+        )
     }
 
     fn render_lines(
         &mut self,
         lyrics: Arc<Lyrics>,
         ms: u32,
+        offset: Option<i32>,
         playing: bool,
         theme: &gpui_kit::component::Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let now = if lyrics.synced { highlight(&lyrics, ms) } else { Highlight::default() };
+        let now = if lyrics.synced { highlight(&lyrics, ms, offset.unwrap_or(0)) } else { Highlight::default() };
         self.shown = now;
         let current = now.line;
         // Room above the first line and below the last, so both can sit in
@@ -371,7 +492,15 @@ impl LyricsView {
         let spacer = || div().flex_none().h((self.scroll.bounds().size.height * 0.45).max(px(24.)));
         let (fg, muted, accent) = (theme.foreground, theme.muted_foreground, theme.primary);
         let lines = lyrics.lines.iter().enumerate().map(|(i, line)| {
-            let base = div().id(("lyric", i)).flex_none().w_full().py_1();
+            let start = line.start_ms;
+            let mut base = div().id(("lyric", i)).flex_none().w_full().py_1();
+            if lyrics.synced {
+                // Right-click a line as it's sung: the lyrics follow from there.
+                base = base.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| this.sync_line(start, cx)),
+                );
+            }
             if !lyrics.synced {
                 return if line.is_label() {
                     base.pt_3().text_sm().font_medium().text_color(muted).child(line.text.clone())
@@ -393,7 +522,6 @@ impl LyricsView {
             };
             // An empty timed line is an instrumental break.
             let text = if line.text.trim().is_empty() { "♪".to_string() } else { line.text.clone() };
-            let start = line.start_ms;
             let base = base
                 .relative()
                 .text_2xl()
@@ -597,7 +725,8 @@ impl Render for Sparks {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: GPUI's own `test` macro would replace the built-in one.
-    use super::{fill_edge, fill_runs};
+    use super::{LEAD_MS, fill_edge, fill_runs, highlight};
+    use crate::lyrics::{Line, Lyrics, Source};
     use gpui_kit::hsla;
 
     #[test]
@@ -627,5 +756,21 @@ mod tests {
         let (a, b, t) = fill_edge("héllo", 3.5 / 9.0).unwrap();
         assert_eq!((a, b), (1, 3));
         assert!((t - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn offset_shifts_the_highlight() {
+        let line = |start_ms: u32| Line { start_ms, end_ms: None, text: "la".into(), words: Vec::new() };
+        let l = Lyrics::timed(Source::Lrclib, vec![line(1000), line(5000)], None);
+        let at = |ms: u32, offset: i32| highlight(&l, ms - LEAD_MS, offset).line;
+        assert_eq!(at(1000, 0), Some(0));
+        // A 20 s intro: the first line comes at 21 s.
+        assert_eq!(at(1000, 20_000), None);
+        assert_eq!(at(20_999, 20_000), None);
+        assert_eq!(at(21_000, 20_000), Some(0));
+        assert_eq!(at(25_000, 20_000), Some(1));
+        // Earlier: the lyrics are ahead of the track.
+        assert_eq!(at(100, -900), Some(0));
+        assert_eq!(at(4100, -900), Some(1));
     }
 }

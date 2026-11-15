@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use serde::Deserialize;
 
 use super::query::{self, Query};
-use super::{Lyrics, SYNC_TOLERANCE_SECS, Source, formats};
+use super::{Lyrics, Source, formats};
 
 const SITE: &str = "https://lrc.red";
 
@@ -53,9 +53,8 @@ pub(super) fn find(guesses: &[Query], duration_secs: Option<u32>) -> Result<Opti
     if file.lines.is_empty() {
         return Ok(file.plain.as_deref().and_then(|p| Lyrics::plain(Source::LrcRed, p)));
     }
-    let lyrics = Lyrics { source: Source::LrcRed, synced: true, instrumental: false, lines: file.lines };
-    let fits = off(&hit, duration_secs).is_none_or(|d| d <= SYNC_TOLERANCE_SECS);
-    Ok(Some(if fits { lyrics } else { lyrics.unsynced() }))
+    let length_diff = hit.duration.zip(duration_secs).map(|(h, d)| h - d as f64);
+    Ok(Some(Lyrics::timed(Source::LrcRed, file.lines, length_diff)))
 }
 
 fn off(hit: &Hit, duration_secs: Option<u32>) -> Option<f64> {

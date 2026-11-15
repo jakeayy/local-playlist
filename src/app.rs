@@ -1501,6 +1501,17 @@ impl LocalPlaylist {
         }
     }
 
+    /// Set (or with `None` clear) the lyrics offset of the song with file key `key`.
+    fn set_lyrics_offset(&mut self, key: &str, offset_ms: Option<i32>, cx: &mut Context<Self>) {
+        match offset_ms {
+            Some(ms) => self.library.lyrics_offsets.insert(key.to_string(), ms),
+            None => self.library.lyrics_offsets.remove(key),
+        };
+        // Saved once the clicking stops.
+        self.save_later();
+        cx.notify();
+    }
+
     /// Show or hide a page about what's playing (toggles; from Settings it
     /// goes back to the playlist page).
     fn toggle_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {

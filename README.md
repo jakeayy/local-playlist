@@ -68,7 +68,9 @@ them in the app, also offline. No account, no ads, no tracking.
   talking, sponsors, "like and subscribe" reminders. You choose what to skip, or turn it off.
 - **Lyrics, karaoke style:** the line being sung lights up word by word and stays in the
   middle; click a line to jump to it. Songs without timed lyrics show the plain text.
-  Uploads like "Artist - Title (Official Video)" are matched to the right song.
+  Uploads like "Artist - Title (Official Video)" are matched to the right song, and if a
+  music video's intro puts the lyrics out of step, shift them for that song (or
+  right-click the line being sung).
 - **Visualizer:** bars, or a circle over a night sky that moves with the music.
 - **Keeps playing in the background:** close the window and the music goes on, with an
   icon in the system tray to bring it back, pause, skip or quit (desktop app; turn it off

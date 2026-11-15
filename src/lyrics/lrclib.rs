@@ -35,20 +35,23 @@ impl Record {
         (!lines.is_empty()).then_some(lines)
     }
 
-    fn duration_off(&self, duration_secs: Option<u32>) -> Option<f64> {
-        Some((self.duration? - duration_secs? as f64).abs())
+    /// How much longer (negative: shorter) this entry is than the track.
+    fn length_diff(&self, duration_secs: Option<u32>) -> Option<f64> {
+        Some(self.duration? - duration_secs? as f64)
     }
 
-    /// Lyrics from this entry: timed if its length matches the track's
-    /// (or the track's is unknown), plain otherwise.
+    fn duration_off(&self, duration_secs: Option<u32>) -> Option<f64> {
+        self.length_diff(duration_secs).map(f64::abs)
+    }
+
+    /// Lyrics from this entry: timed if it has timings (marked as for
+    /// another cut if its length doesn't match the track's), plain otherwise.
     fn lyrics(&self, duration_secs: Option<u32>) -> Option<Lyrics> {
         if self.instrumental {
             return Some(Lyrics::instrumental(Source::Lrclib));
         }
-        let fits = self.duration_off(duration_secs).is_none_or(|d| d <= SYNC_TOLERANCE_SECS);
         if let Some(lines) = self.timed() {
-            let lyrics = Lyrics { source: Source::Lrclib, synced: true, instrumental: false, lines };
-            return Some(if fits { lyrics } else { lyrics.unsynced() });
+            return Some(Lyrics::timed(Source::Lrclib, lines, self.length_diff(duration_secs)));
         }
         Lyrics::plain(Source::Lrclib, self.plain_lyrics.as_deref()?)
     }
@@ -140,13 +143,15 @@ mod tests {
     }
 
     #[test]
-    fn timed_only_when_the_length_fits() {
+    fn marks_timings_for_another_cut() {
         let r = record("Song", "Band", 200.0, Some("[00:01.00]La"), Some("La"));
-        assert!(r.lyrics(Some(201)).unwrap().synced);
-        assert!(r.lyrics(None).unwrap().synced);
+        assert_eq!(r.lyrics(Some(201)).unwrap().other_cut, None);
+        assert_eq!(r.lyrics(None).unwrap().other_cut, None);
+        // The track is a music video a minute longer than the song.
         let off = r.lyrics(Some(260)).unwrap();
-        assert!(!off.synced);
-        assert_eq!(off.lines[0].text, "La");
+        assert!(off.synced);
+        assert_eq!(off.other_cut, Some(-60));
+        assert_eq!(off.lines[0].start_ms, 1000);
     }
 
     #[test]
@@ -159,7 +164,7 @@ mod tests {
             record("Song", "Someone Else", 200.0, Some("[00:01.00]Wrong artist"), None),
         ];
         let l = best(records, &guess("Band", "Song"), Some(200)).unwrap();
-        assert!(l.synced);
+        assert!(l.synced && l.other_cut.is_none());
         assert_eq!(l.lines[0].text, "Near");
         assert!(best(Vec::new(), &guess("Band", "Song"), Some(200)).is_none());
     }

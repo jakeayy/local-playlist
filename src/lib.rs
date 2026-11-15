@@ -95,6 +95,7 @@ gpui_kit::assets::icon_assets!(
         LogIn,
         LogOut,
         MicVocal,
+        Minus,
         Pause,
         Play,
         Plus,

@@ -54,6 +54,11 @@ pub struct Lyrics {
     /// The song has no lyrics (and `lines` is empty).
     #[serde(default)]
     pub instrumental: bool,
+    /// The timings are for a version of the song this many seconds longer
+    /// (negative: shorter) than the track, e.g. the album cut of a music
+    /// video: shown as a hint that they may need an offset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_cut: Option<i32>,
     pub lines: Vec<Line>,
 }
 
@@ -95,22 +100,18 @@ impl Lyrics {
         while lines.last().is_some_and(|l| l.text.is_empty()) {
             lines.pop();
         }
-        (!lines.is_empty()).then_some(Self { source, synced: false, instrumental: false, lines })
+        (!lines.is_empty()).then_some(Self { source, synced: false, instrumental: false, other_cut: None, lines })
     }
 
     pub fn instrumental(source: Source) -> Self {
-        Self { source, synced: false, instrumental: true, lines: Vec::new() }
+        Self { source, synced: false, instrumental: true, other_cut: None, lines: Vec::new() }
     }
 
-    /// The same text without timings.
-    pub fn unsynced(mut self) -> Self {
-        self.synced = false;
-        for l in &mut self.lines {
-            l.start_ms = 0;
-            l.end_ms = None;
-            l.words.clear();
-        }
-        self
+    /// Timed lines, `length_diff` seconds longer than the track (negative:
+    /// shorter) if known; beyond [`SYNC_TOLERANCE_SECS`] it's another cut.
+    pub fn timed(source: Source, lines: Vec<Line>, length_diff: Option<f64>) -> Self {
+        let other_cut = length_diff.filter(|d| d.abs() > SYNC_TOLERANCE_SECS).map(|d| d.round() as i32);
+        Self { source, synced: true, instrumental: false, other_cut, lines }
     }
 
     /// Whether any line has word timings.
@@ -195,7 +196,7 @@ impl Line {
 }
 
 /// Timed lyrics further off than this from the track's length were timed for
-/// another cut (a music video with an intro, a radio edit): shown untimed.
+/// another cut (a music video with an intro, a radio edit): see `other_cut`.
 pub const SYNC_TOLERANCE_SECS: f64 = 3.0;
 
 /// What a lookup found.
@@ -259,11 +260,16 @@ pub mod cache {
     const MISS_MAX_AGE_MS: f64 = 7.0 * 24.0 * 3600.0 * 1000.0;
     /// Found lyrics are refreshed after this long (timings get improved).
     const HIT_MAX_AGE_MS: f64 = 90.0 * 24.0 * 3600.0 * 1000.0;
+    /// Entries from other versions are looked up again. 2: timings for
+    /// another cut are kept (they were dropped), lines have end times.
+    const VERSION: u32 = 2;
     /// Files kept; the oldest go beyond that (each is a few kB).
     const MAX_FILES: usize = 3000;
 
     #[derive(Serialize, Deserialize)]
     pub struct Entry {
+        #[serde(default)]
+        pub version: u32,
         pub fetched_ms: f64,
         pub lyrics: Option<Lyrics>,
     }
@@ -280,14 +286,14 @@ pub mod cache {
     pub fn get(dir: &Path, key: &str) -> Option<Option<Lyrics>> {
         let e: Entry = serde_json::from_slice(&std::fs::read(file(dir, key)).ok()?).ok()?;
         let max_age = if e.lyrics.is_some() { HIT_MAX_AGE_MS } else { MISS_MAX_AGE_MS };
-        (crate::now_ms() - e.fetched_ms < max_age).then_some(e.lyrics)
+        (e.version == VERSION && crate::now_ms() - e.fetched_ms < max_age).then_some(e.lyrics)
     }
 
     pub fn put(dir: &Path, key: &str, lyrics: &Option<Lyrics>) {
         let _ = std::fs::create_dir_all(dir);
         let path = file(dir, key);
         let tmp = path.with_extension("json.tmp");
-        let entry = Entry { fetched_ms: crate::now_ms(), lyrics: lyrics.clone() };
+        let entry = Entry { version: VERSION, fetched_ms: crate::now_ms(), lyrics: lyrics.clone() };
         if let Ok(bytes) = serde_json::to_vec(&entry)
             && std::fs::write(&tmp, bytes).is_ok()
         {
@@ -329,7 +335,11 @@ pub mod cache {
             let l = Lyrics::plain(Source::Lrclib, "one\ntwo");
             put(&dir, "YouTube-b", &l);
             assert_eq!(get(&dir, "YouTube-b"), Some(l));
-            for i in 0..12 {
+            // Entries from before the current version are looked up again.
+            let old = serde_json::json!({ "fetched_ms": crate::now_ms(), "lyrics": null });
+            std::fs::write(file(&dir, "YouTube-old"), old.to_string()).unwrap();
+            assert_eq!(get(&dir, "YouTube-old"), None);
+            for i in 0..11 {
                 put(&dir, &format!("k{i}"), &None);
             }
             prune(&dir, 10);
@@ -354,25 +364,23 @@ mod tests {
 
     #[test]
     fn finds_current_line_and_word() {
-        let l = Lyrics {
-            source: Source::Lrclib,
-            synced: true,
-            instrumental: false,
-            lines: vec![line(1000, "la la", &[(1000, 3), (1500, 5)]), line(3000, "next", &[])],
-        };
+        let lines = vec![line(1000, "la la", &[(1000, 3), (1500, 5)]), line(3000, "next", &[])];
+        let l = Lyrics::timed(Source::Lrclib, lines, Some(1.0));
+        assert_eq!(l.other_cut, None);
         assert_eq!(l.line_at(0), None);
         assert_eq!(l.line_at(1000), Some(0));
         assert_eq!(l.line_at(2999), Some(0));
         assert_eq!(l.line_at(60_000), Some(1));
         assert!(l.has_words());
-        let plain = l.unsynced();
-        assert_eq!(plain.line_at(2000), None);
-        assert!(!plain.has_words());
+        assert!(Lyrics::plain(Source::Lrclib, "la").unwrap().line_at(2000).is_none());
+        // Timed for a longer cut: kept, with how much longer.
+        assert_eq!(Lyrics::timed(Source::Lrclib, Vec::new(), Some(45.4)).other_cut, Some(45));
+        assert_eq!(Lyrics::timed(Source::Lrclib, Vec::new(), None).other_cut, None);
     }
 
     #[test]
     fn line_progress_runs_to_the_next_line() {
-        let timed = |lines: Vec<Line>| Lyrics { source: Source::Lrclib, synced: true, instrumental: false, lines };
+        let timed = |lines: Vec<Line>| Lyrics::timed(Source::Lrclib, lines, None);
         // 4 s to the next line: filled 0.8 s early.
         let l = timed(vec![line(1000, "a line of some length", &[]), line(5000, "next", &[])]);
         assert_eq!(l.line_progress(0, 500), 0.0);
@@ -401,12 +409,11 @@ mod tests {
     fn word_progress_runs_through_each_word() {
         let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
         // "ab " sung 1000..2000, "cd" from 2000; the next line at 4000.
-        let l = Lyrics {
-            source: Source::Lrclib,
-            synced: true,
-            instrumental: false,
-            lines: vec![line(1000, "ab cd", &[(1000, 3), (2000, 5)]), line(4000, "next", &[])],
-        };
+        let l = Lyrics::timed(
+            Source::Lrclib,
+            vec![line(1000, "ab cd", &[(1000, 3), (2000, 5)]), line(4000, "next", &[])],
+            None,
+        );
         assert_eq!(l.line_progress(0, 900), 0.0);
         assert_eq!(l.line_progress(0, 1000), 0.0);
         // Halfway through the first word (3 of 5 characters).
@@ -418,12 +425,8 @@ mod tests {
         assert!(close(l.line_progress(0, 2800), 4.0 / 5.0));
         assert_eq!(l.line_progress(0, 3600), 1.0);
         // A long break after the last word doesn't stretch it.
-        let l = Lyrics {
-            source: Source::Lrclib,
-            synced: true,
-            instrumental: false,
-            lines: vec![line(0, "ab cd", &[(0, 3), (500, 5)]), line(30_000, "next", &[])],
-        };
+        let l =
+            Lyrics::timed(Source::Lrclib, vec![line(0, "ab cd", &[(0, 3), (500, 5)]), line(30_000, "next", &[])], None);
         assert_eq!(l.line_progress(0, 3000), 1.0);
     }
 
