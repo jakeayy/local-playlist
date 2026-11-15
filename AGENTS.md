@@ -75,7 +75,7 @@ cargo test --locked --no-default-features --features server      # server only
 cargo +nightly check --locked --lib --target wasm32-unknown-unknown --no-default-features --features ui
 ```
 
-- The desktop build needs system libraries on Linux: see "Requirements" in the README
+- The desktop build needs system libraries on Linux: see "Building" in CONTRIBUTING.md
   (Fedora package names) or the install step in `ci.yml` (Ubuntu). The server-only build
   needs none.
 - Tests live in `#[cfg(test)] mod tests` inside each module. Offline tests must not touch
@@ -115,7 +115,7 @@ cargo +nightly check --locked --lib --target wasm32-unknown-unknown --no-default
   jobs (downloads, the decoder, file moves, server workers) get their own
   `std::thread::spawn`. After bursts of large allocations (big JSON pages, many covers) call
   `crate::mem::trim()`.
-- **Size, memory and redraws matter:** release sizes are listed in the README, memory use
+- **Size, memory and redraws matter:** release sizes are listed in CONTRIBUTING.md, memory use
   is kept bounded (`mem.rs`, `app/thumbs.rs`), and per-frame work is kept small
   (`app/progress.rs` is its own view so a ticking clock doesn't redraw the window). Before
   adding a dependency,
@@ -193,7 +193,10 @@ only).
 
 ## Keep in sync
 
-- `README.md`: features, requirements, the module table under "Development", Docker usage.
+- `README.md`: written for users, not developers: features, download, getting started,
+  privacy, the web version and Docker. Keep build and code details out of it.
+- `CONTRIBUTING.md`: building, the Cargo features, development commands, the module table,
+  releases.
 - `ADDING-COOKIES.md`: anything about logging in or cookies.
-- `CONTRIBUTING.md` and `.github/pull_request_template.md`: build and test steps.
+- `.github/pull_request_template.md`: the build and test checklist.
 - `.github/release-downloads.sh`: the text of the release notes.
