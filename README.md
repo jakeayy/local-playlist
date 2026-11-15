@@ -1,14 +1,60 @@
-# Local Playlist
+<p align="center">
+  <img src="docs/icon.svg" width="112" height="112" alt="">
+</p>
 
-[![Latest release](https://img.shields.io/github/v/release/jakeayy/local-playlist?label=release)](https://github.com/jakeayy/local-playlist/releases/latest)
-[![Latest pre-release](https://img.shields.io/github/v/release/jakeayy/local-playlist?include_prereleases&label=pre-release)](https://github.com/jakeayy/local-playlist/releases)
-[![Docker image](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/jakeayy/local-playlist/pkgs/container/local-playlist)
+<h1 align="center">Local Playlist</h1>
+
+<p align="center">
+  <a href="https://github.com/jakeayy/local-playlist/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/jakeayy/local-playlist?label=release"></a>
+  <a href="https://github.com/jakeayy/local-playlist/releases"><img alt="Latest pre-release" src="https://img.shields.io/github/v/release/jakeayy/local-playlist?include_prereleases&label=pre-release"></a>
+  <a href="https://github.com/jakeayy/local-playlist/pkgs/container/local-playlist"><img alt="Docker image" src="https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white"></a>
+</p>
 
 A privacy-friendly, local-first music player for links from **YouTube / YouTube Music** and
 **SoundCloud**. Paste links, build playlists that live on your machine, and play them
 directly in the app. No accounts, no logins, no telemetry.
 
 Built with Rust, [GPUI Kit](https://gpui-kit.com) (GPUI Fast backend), rodio, and yt-dlp.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/playlist-dark.png">
+  <img src="docs/screenshots/playlist-light.png" alt="A playlist mixing YouTube and SoundCloud tracks, one of them playing; the theme takes its accent colour from the cover">
+</picture>
+
+<table>
+  <tr>
+    <td>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/visualizer-dark.png">
+        <img src="docs/screenshots/visualizer-light.png" alt="The circle visualizer over a night sky with an aurora and mountain ridges">
+      </picture>
+    </td>
+    <td>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
+        <img src="docs/screenshots/settings-light.png" alt="Settings: appearance, colours from cover art, and SponsorBlock categories">
+      </picture>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">Visualizer</td>
+    <td align="center">Settings</td>
+  </tr>
+</table>
+
+<sub>Music in the screenshots: releases by <a href="https://ncs.io">NoCopyrightSounds</a>.</sub>
+
+## Contents
+
+- [Features](#features)
+- [How it stays private](#how-it-stays-private)
+- [Web version (self-hosted)](#web-version-self-hosted)
+  - [Docker](#docker)
+  - [Building the web UI yourself](#building-the-web-ui-yourself)
+- [Requirements](#requirements)
+- [Development](#development)
+- [License](#license)
+- [Star history](#star-history)
 
 ## Features
 
@@ -228,3 +274,12 @@ WITHOUT ANY WARRANTY; see [LICENSE](LICENSE) for details.
 
 The bundled Noto Sans fonts are under the SIL Open Font License
 ([assets/fonts/OFL.txt](assets/fonts/OFL.txt)).
+
+## Star history
+
+<a href="https://www.star-history.com/?repos=jakeayy%2Flocal-playlist">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jakeayy/local-playlist&type=Date&theme=dark">
+    <img alt="Star history chart for jakeayy/local-playlist" src="https://api.star-history.com/svg?repos=jakeayy/local-playlist&type=Date">
+  </picture>
+</a>
