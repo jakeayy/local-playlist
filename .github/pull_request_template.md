@@ -29,7 +29,7 @@
 
 ## Privacy checklist
 
-- [ ] No telemetry, analytics or new network destinations (other than the platforms themselves, SponsorBlock, GitHub for components and PyPI for the `yt-dlp-ejs` wheel)
+- [ ] No telemetry, analytics or new network destinations (other than the platforms themselves, SponsorBlock, LRCLIB and lrc.red for lyrics, GitHub for components and PyPI for the `yt-dlp-ejs` wheel)
 - [ ] Platform cookies are only sent to their own platform, and only when needed
 - [ ] The web UI / server never receive platform credentials
 - [ ] No secrets (cookies, tokens, passwords) in logs or error messages

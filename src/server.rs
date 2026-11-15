@@ -5,7 +5,8 @@
 //! * The server never sees platform logins/cookies; it only handles public content.
 //! * Everything personal (library, settings) stays in the browser.
 //! * Access requires the server password; the API accepts only YouTube and
-//!   SoundCloud links (no arbitrary URLs reach yt-dlp).
+//!   SoundCloud links (no arbitrary URLs reach yt-dlp). Lyrics are looked up
+//!   at fixed hosts (LRCLIB, lrc.red); clients only say which song.
 //! * Request URLs aren't logged; audio is cached briefly and then deleted.
 
 use std::collections::{HashMap, HashSet};
@@ -279,6 +280,13 @@ fn handle(state: &State, mut req: Request) {
             let resp = cover(state, &query);
             respond(req, resp)
         }
+        (Method::Get, "/api/lyrics") => {
+            if !authorized(state, &req, &query) {
+                return respond(req, error(401, "unauthorized"));
+            }
+            let resp = lyrics(state, &query);
+            respond(req, resp)
+        }
         (Method::Get, "/api/audio") => {
             if !authorized(state, &req, &query) {
                 return respond(req, error(401, "unauthorized"));
@@ -417,6 +425,30 @@ fn segments(query: &HashMap<String, String>) -> Response<std::io::Cursor<Vec<u8>
     };
     match crate::sponsorblock::fetch(id) {
         Ok(segs) => json(200, serde_json::to_value(segs).unwrap_or_default()),
+        Err(e) => error(502, format!("{e:#}")),
+    }
+}
+
+/// Lyrics of a track (the browser can't reach the lyrics services itself),
+/// cached like on the desktop. `null` when there are none.
+fn lyrics(state: &State, query: &HashMap<String, String>) -> Response<std::io::Cursor<Vec<u8>>> {
+    let platform = match query.get("platform").map(String::as_str) {
+        Some("yt") => Platform::YouTube,
+        Some("sc") => Platform::SoundCloud,
+        _ => return error(400, "missing or invalid platform"),
+    };
+    let Some(id) = query.get("id").filter(|id| crate::cover::valid_id(platform, id)) else {
+        return error(400, "missing or invalid id");
+    };
+    let text = |key: &str| query.get(key).map(String::as_str).unwrap_or("").trim();
+    let (title, artist) = (text("title"), text("artist"));
+    if title.is_empty() || title.len() > 300 || artist.len() > 300 {
+        return error(400, "missing or invalid title or artist");
+    }
+    let duration = query.get("duration").and_then(|d| d.parse().ok());
+    let track = Track::new(platform, id.as_str(), "", title, artist, duration);
+    match crate::lyrics::for_track(&state.paths, &track) {
+        Ok(l) => json(200, serde_json::to_value(l).unwrap_or_default()),
         Err(e) => error(502, format!("{e:#}")),
     }
 }

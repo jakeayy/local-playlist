@@ -133,6 +133,8 @@ pub struct Settings {
     pub sponsorblock: bool,
     /// SponsorBlock categories to skip (see `sponsorblock::CATEGORIES`).
     pub sponsorblock_categories: Vec<String>,
+    /// Desktop: closing the window keeps the app playing, with a tray icon.
+    pub background: bool,
 }
 
 impl Default for Settings {
@@ -149,6 +151,7 @@ impl Default for Settings {
             cover_colors: true,
             sponsorblock: true,
             sponsorblock_categories: crate::sponsorblock::default_categories(),
+            background: true,
         }
     }
 }

@@ -97,6 +97,9 @@ Where things live:
 | `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
 | `src/download.rs` | Shared download state |
 | `src/storage.rs` | Music folder layout, removed-tracks cache |
+| `src/lyrics/` | Lyrics lookup (LRCLIB, lrc.red), artist/title guessing, LRC and Lyricsfile parsing |
+| `src/app/lyrics.rs` | The lyrics page (karaoke highlighting) |
+| `src/tray.rs` | Tray icon for playing in the background (Linux: ksni, Windows: Shell_NotifyIcon) |
 
 [AGENTS.md](AGENTS.md) has a more detailed map and the project's conventions.
 
@@ -142,7 +145,8 @@ request. The pull request template has the full checklist.
 Local Playlist doesn't phone home. Changes must keep it that way:
 
 - No telemetry, analytics or new network destinations other than the platforms
-  themselves, SponsorBlock, GitHub for components, and PyPI for the `yt-dlp-ejs` wheel.
+  themselves, SponsorBlock, the lyrics databases LRCLIB and lrc.red (only while the
+  lyrics page is open), GitHub for components, and PyPI for the `yt-dlp-ejs` wheel.
 - Platform cookies are sent only to their own platform, and only when needed.
 - The web UI and the server never receive platform credentials.
 - No cookies, tokens or passwords in logs or error messages.

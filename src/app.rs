@@ -1,6 +1,7 @@
 //! Main window: sidebar with playlists, track list, and player bar.
 
 mod backdrop;
+mod lyrics;
 mod progress;
 mod settings;
 mod thumbs;
@@ -58,6 +59,14 @@ enum View {
     Settings,
 }
 
+/// What the playlist page shows: its tracks, or a page about what's playing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Panel {
+    Tracks,
+    Visualizer,
+    Lyrics,
+}
+
 /// A running "Download all" for one playlist.
 #[derive(Default)]
 struct Batch {
@@ -77,6 +86,9 @@ enum PlayState {
 
 pub struct LocalPlaylist {
     paths: Paths,
+    /// The window showing this view; none while playing in the background
+    /// (desktop: the window closed, the tray icon kept the app running).
+    window: Option<AnyWindowHandle>,
     ytdlp: YtDlp,
     library: Library,
     selected: Option<String>,
@@ -154,9 +166,23 @@ pub struct LocalPlaylist {
     /// The rows the track list shows (indices into the selected playlist's
     /// tracks; `None` = all), as last drawn.
     list_rows: Option<Rc<Vec<usize>>>,
-    /// Shown in place of the track list when `show_visualizer` is on.
+    /// Shown in place of the track list (`panel`).
     visualizer: Entity<visualizer::Visualizer>,
-    show_visualizer: bool,
+    lyrics: Entity<lyrics::LyricsView>,
+    panel: Panel,
+    /// Subscriptions to the window and its inputs (renewed with the window).
+    window_subscriptions: Vec<Subscription>,
+    /// Tray icon, while playing in the background is on and the desktop has a tray.
+    #[cfg(feature = "desktop")]
+    tray: Option<crate::tray::Tray>,
+    #[cfg(feature = "desktop")]
+    tray_commands: futures::channel::mpsc::UnboundedSender<crate::tray::Command>,
+    /// The desktop's tray shows the icon (it can go away, e.g. a panel restart).
+    #[cfg(feature = "desktop")]
+    tray_shown: bool,
+    /// What the tray last showed.
+    #[cfg(feature = "desktop")]
+    tray_status: crate::tray::Status,
     /// Track (platform, id) whose cover the visualizer shows or is loading.
     cover_for: Option<(Platform, String)>,
     /// Cover of the playing track (player bar).
@@ -173,6 +199,35 @@ pub struct LocalPlaylist {
     thumbs: thumbs::Thumbs,
     _subscriptions: Vec<Subscription>,
     _ticker: Task<()>,
+}
+
+/// The text inputs. They belong to the window they were made for (focus,
+/// input methods), so a window reopened from the tray gets new ones.
+struct Inputs {
+    url_input: Entity<InputState>,
+    import_input: Entity<InputState>,
+    name_input: Entity<InputState>,
+    search_input: Entity<InputState>,
+    server_password: Entity<InputState>,
+    cookie_input: Entity<TextareaState>,
+}
+
+impl Inputs {
+    fn new(window: &mut Window, cx: &mut App) -> Self {
+        Self {
+            url_input: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Paste a YouTube / SoundCloud track or playlist link…")
+            }),
+            import_input: cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL")),
+            name_input: cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name")),
+            search_input: cx.new(|cx| InputState::new(window, cx).placeholder("Search title or artist")),
+            server_password: cx.new(|cx| InputState::new(window, cx).placeholder("Server password").masked(true)),
+            cookie_input: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .placeholder("Paste a Netscape cookies.txt export, or a Cookie header (name=value; name2=value2)")
+            }),
+        }
+    }
 }
 
 impl LocalPlaylist {
@@ -212,58 +267,13 @@ impl LocalPlaylist {
             cx.new(|_| visualizer::Visualizer::new(tap))
         };
 
-        let url_input = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Paste a YouTube / SoundCloud track or playlist link…"));
-        let import_input = cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL"));
-        let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name"));
-        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search title or artist"));
-        let server_password = cx.new(|cx| InputState::new(window, cx).placeholder("Server password").masked(true));
-        let cookie_input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder("Paste a Netscape cookies.txt export, or a Cookie header (name=value; name2=value2)")
-        });
+        let Inputs { url_input, import_input, name_input, search_input, server_password, cookie_input } =
+            Inputs::new(window, cx);
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001).default_value(0.));
         let volume = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.01).default_value(library.settings.volume));
 
         let subscriptions = vec![
-            cx.subscribe_in(&url_input, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.add_from_input(window, cx);
-                }
-            }),
-            cx.subscribe_in(&server_password, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.server_login(window, cx);
-                }
-            }),
-            cx.subscribe_in(&import_input, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.import_from_input(window, cx);
-                }
-            }),
-            cx.subscribe_in(&search_input, window, |this, _, ev: &InputEvent, _, cx| {
-                if let InputEvent::Change = ev {
-                    this.list_scroll.scroll_to_item(0, ScrollStrategy::Top);
-                    cx.notify();
-                }
-            }),
-            cx.subscribe_in(&name_input, window, |this, input, ev: &InputEvent, _, cx| {
-                if let InputEvent::Change = ev {
-                    let name = input.read(cx).value().to_string();
-                    if let Some(id) = this.selected.clone()
-                        && let Some(p) = this.library.playlist_mut(&id)
-                        && p.name != name
-                    {
-                        p.name = name;
-                        if !crate::WEB {
-                            this.pending_folder_rename = Some((id.clone(), crate::now_ms()));
-                        }
-                        this.save_later();
-                        cx.notify();
-                    }
-                }
-            }),
-            cx.subscribe_in(&seek, window, |this, _, ev: &SliderEvent, _, cx| match ev {
+            cx.subscribe(&seek, |this, _, ev: &SliderEvent, cx| match ev {
                 SliderEvent::Change(v) => {
                     this.seeking = Some(v.start());
                     cx.notify();
@@ -278,7 +288,7 @@ impl LocalPlaylist {
                     cx.notify();
                 }
             }),
-            cx.subscribe_in(&volume, window, |this, _, ev: &SliderEvent, _, cx| {
+            cx.subscribe(&volume, |this, _, ev: &SliderEvent, cx| {
                 let (SliderEvent::Change(v) | SliderEvent::Release(v)) = ev;
                 this.library.settings.volume = v.start();
                 if let Some(a) = &this.audio {
@@ -295,6 +305,10 @@ impl LocalPlaylist {
             let app = cx.weak_entity();
             cx.new(|_| progress::Progress::new(app))
         };
+        let lyrics = {
+            let app = cx.weak_entity();
+            cx.new(|cx| lyrics::LyricsView::new(app, cx))
+        };
 
         let mut subscriptions = subscriptions;
         // Write edits still waiting for `save_if_due`, whichever comes first:
@@ -310,20 +324,37 @@ impl LocalPlaylist {
                 this.save();
             }
         }));
-        subscriptions.push(cx.observe_window_appearance(window, |this, window, cx| {
-            if this.library.settings.appearance == crate::theme::Appearance::System {
-                crate::theme::apply(crate::theme::Appearance::System, Some(window), cx);
-            }
-        }));
 
-        let ticker = cx.spawn_in(window, async move |this, cx| {
+        // Not tied to the window: playback (next track, SponsorBlock), the
+        // download queue and saving go on while it's closed (desktop).
+        let ticker = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(200)).await;
-                if this.update_in(cx, |this, window, cx| this.tick(window, cx)).is_err() {
+                let Ok(window) = this.update(cx, |this, cx| {
+                    this.tick(cx);
+                    this.window
+                }) else {
                     break;
+                };
+                if let Some(window) = window {
+                    let _ = window.update(cx, |_, window, cx| this.update(cx, |this, cx| this.tick_window(window, cx)));
                 }
             }
         });
+
+        #[cfg(feature = "desktop")]
+        let tray_commands = {
+            use futures::StreamExt as _;
+            let (tx, mut rx) = futures::channel::mpsc::unbounded();
+            cx.spawn(async move |this, cx| {
+                while let Some(command) = rx.next().await {
+                    let Some(main) = this.upgrade() else { break };
+                    cx.update(|cx| tray_command(&main, command, cx));
+                }
+            })
+            .detach();
+            tx
+        };
 
         let mut library = library;
         for i in 0..library.playlists.len() {
@@ -343,6 +374,7 @@ impl LocalPlaylist {
         let mut this = Self {
             ytdlp: YtDlp::new(&paths, library.settings.ytdlp_source, library.settings.js_source),
             paths,
+            window: Some(window.window_handle()),
             library,
             selected: None,
             audio,
@@ -393,7 +425,17 @@ impl LocalPlaylist {
             list_scroll: UniformListScrollHandle::new(),
             list_rows: None,
             visualizer,
-            show_visualizer: false,
+            lyrics,
+            panel: Panel::Tracks,
+            window_subscriptions: Vec::new(),
+            #[cfg(feature = "desktop")]
+            tray: None,
+            #[cfg(feature = "desktop")]
+            tray_commands,
+            #[cfg(feature = "desktop")]
+            tray_shown: false,
+            #[cfg(feature = "desktop")]
+            tray_status: Default::default(),
             cover_for: None,
             now_cover: None,
             stale_covers: Vec::new(),
@@ -404,8 +446,11 @@ impl LocalPlaylist {
             _subscriptions: subscriptions,
             _ticker: ticker,
         };
+        this.window_subscriptions = this.window_subscriptions(window, cx);
         this.select(selected, window, cx);
         this.refresh_components(cx);
+        #[cfg(feature = "desktop")]
+        this.update_tray();
         #[cfg(target_family = "wasm")]
         cx.spawn(async move |this, cx| {
             let ok = crate::web::api::check().await;
@@ -416,6 +461,160 @@ impl LocalPlaylist {
         })
         .detach();
         this
+    }
+
+    // --------------------------------------------------------------- window
+
+    /// Listen to the window and the inputs made for it.
+    fn window_subscriptions(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
+        vec![
+            cx.subscribe_in(&self.url_input, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.add_from_input(window, cx);
+                }
+            }),
+            cx.subscribe_in(&self.server_password, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.server_login(window, cx);
+                }
+            }),
+            cx.subscribe_in(&self.import_input, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.import_from_input(window, cx);
+                }
+            }),
+            cx.subscribe_in(&self.search_input, window, |this, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::Change = ev {
+                    this.list_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&self.name_input, window, |this, input, ev: &InputEvent, _, cx| {
+                if let InputEvent::Change = ev {
+                    let name = input.read(cx).value().to_string();
+                    if let Some(id) = this.selected.clone()
+                        && let Some(p) = this.library.playlist_mut(&id)
+                        && p.name != name
+                    {
+                        p.name = name;
+                        if !crate::WEB {
+                            this.pending_folder_rename = Some((id.clone(), crate::now_ms()));
+                        }
+                        this.save_later();
+                        cx.notify();
+                    }
+                }
+            }),
+            cx.observe_window_appearance(window, |this, window, cx| {
+                if this.library.settings.appearance == crate::theme::Appearance::System {
+                    crate::theme::apply(crate::theme::Appearance::System, Some(window), cx);
+                }
+            }),
+        ]
+    }
+
+    /// Show this view in a new window, after the previous one was closed and
+    /// playback went on in the background (desktop).
+    #[cfg(feature = "desktop")]
+    fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let inputs = Inputs::new(window, cx);
+        self.url_input = inputs.url_input;
+        self.import_input = inputs.import_input;
+        self.name_input = inputs.name_input;
+        self.search_input = inputs.search_input;
+        self.server_password = inputs.server_password;
+        self.cookie_input = inputs.cookie_input;
+        self.window = Some(window.window_handle());
+        self.window_subscriptions = self.window_subscriptions(window, cx);
+        crate::theme::apply(self.library.settings.appearance, Some(window), cx);
+        // Fills in the new name field.
+        self.select(self.selected.clone(), window, cx);
+        self.refresh_lyrics(cx);
+    }
+
+    /// The window was closed: keep going without it (desktop).
+    #[cfg(feature = "desktop")]
+    fn detach(&mut self) {
+        self.window = None;
+        self.window_subscriptions.clear();
+        self.seeking = None;
+        // Their textures went with the window; thumbnails load again when shown.
+        self.stale_covers.clear();
+        self.thumbs = thumbs::Thumbs::default();
+        crate::mem::trim();
+    }
+
+    /// Finish work started from the window: with the window if one is open
+    /// (for its inputs and notifications), without it if it was closed in the
+    /// meantime (desktop, playing in the background), so results aren't lost.
+    fn finish(
+        this: &WeakEntity<Self>,
+        cx: &mut AsyncApp,
+        f: impl FnOnce(&mut Self, Option<&mut Window>, &mut Context<Self>),
+    ) {
+        let mut f = Some(f);
+        if let Ok(Some(handle)) = this.read_with(cx, |this, _| this.window) {
+            let _ = handle.update(cx, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    if let Some(f) = f.take() {
+                        f(this, Some(window), cx)
+                    }
+                })
+            });
+        }
+        if let Some(f) = f.take() {
+            let _ = this.update(cx, |this, cx| f(this, None, cx));
+        }
+    }
+
+    /// Show a notification now, or in the next window if none is open.
+    fn note(&mut self, window: Option<&mut Window>, note: Notification, cx: &mut Context<Self>) {
+        match window {
+            Some(window) => window.push_notification(note, cx),
+            None => self.pending_notes.push(note),
+        }
+    }
+
+    // ----------------------------------------------------------------- tray
+
+    /// Show the tray icon while playing in the background is on.
+    #[cfg(feature = "desktop")]
+    fn update_tray(&mut self) {
+        if !self.library.settings.background {
+            self.tray = None;
+        } else if self.tray.is_none() {
+            self.tray = crate::tray::Tray::start(self.tray_commands.clone());
+            self.tray_shown = self.tray.is_some();
+            self.tray_status = Default::default();
+        }
+    }
+
+    /// Whether closing the window leaves the app running: only while the
+    /// tray can bring the window back.
+    #[cfg(feature = "desktop")]
+    fn runs_in_background(&self) -> bool {
+        self.library.settings.background && self.tray.is_some() && self.tray_shown
+    }
+
+    /// Keep the tray's menu and tooltip up to date.
+    #[cfg(feature = "desktop")]
+    fn sync_tray(&mut self) {
+        let Some(tray) = &self.tray else { return };
+        let status = crate::tray::Status {
+            track: self.now.as_ref().map(|n| {
+                if n.track.artist.is_empty() {
+                    n.track.title.clone()
+                } else {
+                    format!("{} — {}", n.track.title, n.track.artist)
+                }
+            }),
+            playing: self.state == PlayState::Playing && self.audio.as_ref().is_some_and(|a| !a.is_paused()),
+            window_open: self.window.is_some(),
+        };
+        if status != self.tray_status {
+            tray.set_status(&status);
+            self.tray_status = status;
+        }
     }
 
     // ---------------------------------------------------------------- state
@@ -555,9 +754,9 @@ impl LocalPlaylist {
         let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
         let as_collection = link.is_collection();
         let task = sources::resolve_task(cx, link, as_collection, paths, ytdlp, creds);
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            Self::finish(&this, cx, move |this, mut window, cx| {
                 this.adding = false;
                 crate::mem::trim(); // resolving parsed large JSON pages
                 match result {
@@ -567,9 +766,11 @@ impl LocalPlaylist {
                         if let Some(p) = this.library.playlist_mut(&target) {
                             p.tracks.extend(tracks);
                             this.save();
-                            this.url_input.update(cx, |i, cx| i.set_value("", window, cx));
+                            if let Some(window) = window.as_deref_mut() {
+                                this.url_input.update(cx, |i, cx| i.set_value("", window, cx));
+                            }
                             let msg = if n == 1 { "Added 1 track".to_string() } else { format!("Added {n} tracks") };
-                            window.push_notification(Notification::success(msg), cx);
+                            this.note(window, Notification::success(msg), cx);
                         }
                     }
                     Err(e) => this.report_error(e, window, cx),
@@ -581,14 +782,14 @@ impl LocalPlaylist {
     }
 
     /// Show an error, or the server login screen if the server wants a password.
-    fn report_error(&mut self, e: anyhow::Error, window: &mut Window, cx: &mut Context<Self>) {
+    fn report_error(&mut self, e: anyhow::Error, window: Option<&mut Window>, cx: &mut Context<Self>) {
         #[cfg(target_family = "wasm")]
         if e.to_string() == crate::web::api::UNAUTHORIZED {
             self.server_locked = true;
             cx.notify();
             return;
         }
-        window.push_notification(Notification::error(format!("{e:#}")), cx);
+        self.note(window, Notification::error(format!("{e:#}")), cx);
     }
 
     /// Web: log in to the server with its access password.
@@ -645,11 +846,11 @@ impl LocalPlaylist {
             );
             return;
         }
-        self.import_link(link, true, window, cx);
+        self.import_link(link, true, cx);
     }
 
     /// Import a collection link as a new playlist.
-    fn import_link(&mut self, link: Link, clear_input: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn import_link(&mut self, link: Link, clear_input: bool, cx: &mut Context<Self>) {
         if self.importing {
             return;
         }
@@ -657,9 +858,9 @@ impl LocalPlaylist {
         cx.notify();
         let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
         let task = sources::resolve_task(cx, link, true, paths, ytdlp, creds);
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            Self::finish(&this, cx, move |this, mut window, cx| {
                 this.importing = false;
                 crate::mem::trim(); // resolving parsed large JSON pages
                 match result {
@@ -671,13 +872,20 @@ impl LocalPlaylist {
                         let id = playlist.id.clone();
                         this.library.playlists.push(playlist);
                         this.save();
-                        if clear_input {
-                            this.import_input.update(cx, |i, cx| i.set_value("", window, cx));
+                        match window.as_deref_mut() {
+                            Some(window) => {
+                                if clear_input {
+                                    this.import_input.update(cx, |i, cx| i.set_value("", window, cx));
+                                }
+                                this.select(Some(id), window, cx);
+                            }
+                            // Shown when a window opens again (`attach`).
+                            None => this.selected = Some(id),
                         }
-                        this.select(Some(id), window, cx);
-                        window.push_notification(Notification::success(format!("Imported {n} tracks")), cx);
+                        this.note(window, Notification::success(format!("Imported {n} tracks")), cx);
                     }
-                    Ok(Resolved::Track { .. }) => window.push_notification(
+                    Ok(Resolved::Track { .. }) => this.note(
+                        window,
                         Notification::warning("That link points to a single track, not a playlist."),
                         cx,
                     ),
@@ -823,6 +1031,7 @@ impl LocalPlaylist {
         self.last_skip = None;
         self.load_segments(&track, cx);
         self.load_cover(&track, cx);
+        self.refresh_lyrics(cx);
         if !crate::WEB {
             self.prefetch_next(cx);
         }
@@ -1277,6 +1486,45 @@ impl LocalPlaylist {
         self.skip(-1, false, cx);
     }
 
+    /// Playback position in milliseconds.
+    fn position_ms(&self) -> u32 {
+        self.audio.as_ref().map_or(0, |a| a.position().as_millis().min(u32::MAX as u128) as u32)
+    }
+
+    fn seek_to(&mut self, to: Duration, cx: &mut Context<Self>) {
+        if let Some(audio) = &self.audio
+            && self.state == PlayState::Playing
+        {
+            audio.seek(to);
+            self.last_skip = None;
+            cx.notify();
+        }
+    }
+
+    /// Show or hide a page about what's playing (toggles; from Settings it
+    /// goes back to the playlist page).
+    fn toggle_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        if self.view == View::Playlist && self.panel == panel {
+            self.panel = Panel::Tracks;
+        } else {
+            self.view = View::Playlist;
+            self.panel = panel;
+        }
+        self.refresh_lyrics(cx);
+        cx.notify();
+    }
+
+    /// Lyrics are looked up only while their page is shown (they tell the
+    /// lyrics services what's playing): not with the window closed either.
+    fn refresh_lyrics(&mut self, cx: &mut Context<Self>) {
+        if self.panel != Panel::Lyrics || self.window.is_none() {
+            return;
+        }
+        let track = self.now.as_ref().map(|n| n.track.clone());
+        let paths = self.paths.clone();
+        self.lyrics.update(cx, |v, cx| v.show(track.as_ref(), &paths, false, cx));
+    }
+
     fn total_duration(&self) -> Option<Duration> {
         // Metadata first: while streaming, players only know the length received so far.
         self.now
@@ -1285,19 +1533,9 @@ impl LocalPlaylist {
             .or_else(|| self.audio.as_ref().and_then(|a| a.duration()))
     }
 
-    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for note in self.pending_notes.drain(..) {
-            window.push_notification(note, cx);
-        }
-        // Free replaced covers' textures (each up to 640² px, 1.6 MB).
-        if !self.stale_covers.is_empty() {
-            let now = crate::now_ms();
-            let (old, keep): (Vec<_>, Vec<_>) = self.stale_covers.drain(..).partition(|(_, at)| now - at > 500.0);
-            self.stale_covers = keep;
-            for (img, _) in old {
-                cx.drop_image(img, Some(window));
-            }
-        }
+    /// Five times a second, with or without a window: playback, downloads,
+    /// saving.
+    fn tick(&mut self, cx: &mut Context<Self>) {
         if self.installing.is_some() {
             cx.notify();
         }
@@ -1348,7 +1586,7 @@ impl LocalPlaylist {
                     b.done, b.failed
                 ))
             };
-            window.push_notification(note, cx);
+            self.pending_notes.push(note);
         }
         self.pump_queue();
         self.apply_folder_rename();
@@ -1359,21 +1597,13 @@ impl LocalPlaylist {
             self.state = PlayState::Idle;
             cx.notify();
             let title = self.now.as_ref().map(|n| n.track.title.clone()).unwrap_or_default();
-            window.push_notification(
-                Notification::error(format!("Couldn't play \"{title}\": {err}")).autohide(false),
-                cx,
-            );
+            self.pending_notes.push(Notification::error(format!("Couldn't play \"{title}\": {err}")).autohide(false));
         }
         if self.state == PlayState::Playing {
             if self.audio.as_ref().is_some_and(|a| a.finished()) {
                 self.skip(1, true, cx);
             } else if self.seeking.is_none() {
                 self.skip_segments(cx);
-                let pos = self.audio.as_ref().map(|a| a.position()).unwrap_or_default();
-                if let Some(total) = self.total_duration().filter(|d| !d.is_zero()) {
-                    let frac = (pos.as_secs_f32() / total.as_secs_f32()).clamp(0., 1.);
-                    self.seek.update(cx, |s, cx| s.set_value(frac, window, cx));
-                }
             }
             // While a track just plays, only the clock moves: redraw the seek row
             // alone. The whole window when something else shown changes, and
@@ -1388,6 +1618,115 @@ impl LocalPlaylist {
         } else if !self.downloads.is_empty() {
             cx.notify();
         }
+        // Another start of the app asked for the window (see `instance`).
+        #[cfg(feature = "desktop")]
+        if crate::instance::show_requested(&self.paths) {
+            let _ = self.tray_commands.unbounded_send(crate::tray::Command::ShowWindow);
+        }
+        // Without a window, keep only the latest notifications.
+        if self.window.is_none() {
+            let excess = self.pending_notes.len().saturating_sub(5);
+            self.pending_notes.drain(..excess);
+        }
+        #[cfg(feature = "desktop")]
+        self.sync_tray();
+    }
+
+    /// What needs the window: notifications, the seek slider, and freeing
+    /// the textures of replaced covers.
+    fn tick_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for note in self.pending_notes.drain(..) {
+            window.push_notification(note, cx);
+        }
+        // Free replaced covers' textures (each up to 640² px, 1.6 MB).
+        if !self.stale_covers.is_empty() {
+            let now = crate::now_ms();
+            let (old, keep): (Vec<_>, Vec<_>) = self.stale_covers.drain(..).partition(|(_, at)| now - at > 500.0);
+            self.stale_covers = keep;
+            for (img, _) in old {
+                cx.drop_image(img, Some(window));
+            }
+        }
+        if self.state == PlayState::Playing
+            && self.seeking.is_none()
+            && let Some(total) = self.total_duration().filter(|d| !d.is_zero())
+        {
+            let pos = self.audio.as_ref().map(|a| a.position()).unwrap_or_default();
+            let frac = (pos.as_secs_f32() / total.as_secs_f32()).clamp(0., 1.);
+            self.seek.update(cx, |s, cx| s.set_value(frac, window, cx));
+        }
+    }
+}
+
+// ------------------------------------------------------------ background
+
+/// Open the app's window (desktop start).
+#[cfg(feature = "desktop")]
+pub fn open(paths: Paths, cx: &mut App) -> Entity<LocalPlaylist> {
+    let (_, main) = gpui_kit::open_window(crate::window_options(cx), cx, |window, cx| {
+        cx.new(|cx| LocalPlaylist::new(paths, window, cx))
+    })
+    .expect("failed to open window");
+    main
+}
+
+/// The window was closed: keep playing in the background if the tray can
+/// bring it back, otherwise quit.
+#[cfg(feature = "desktop")]
+pub fn window_closed(main: &Entity<LocalPlaylist>, cx: &mut App) {
+    let keep = main.update(cx, |this, _| {
+        this.detach();
+        this.sync_tray();
+        this.runs_in_background()
+    });
+    if !keep {
+        cx.quit();
+    }
+}
+
+/// Open a window around the running app again.
+#[cfg(feature = "desktop")]
+fn reopen(main: &Entity<LocalPlaylist>, cx: &mut App) {
+    if main.read(cx).window.is_some() {
+        return;
+    }
+    let view = main.clone();
+    let opened = gpui_kit::open_window(crate::window_options(cx), cx, move |window, cx| {
+        view.update(cx, |this, cx| this.attach(window, cx));
+        view
+    });
+    match opened {
+        Ok(_) => cx.activate(true),
+        Err(e) => eprintln!("couldn't open the window: {e:#}"),
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn tray_command(main: &Entity<LocalPlaylist>, command: crate::tray::Command, cx: &mut App) {
+    use crate::tray::Command;
+    let window = main.read(cx).window;
+    match command {
+        Command::ToggleWindow | Command::ShowWindow if window.is_none() => reopen(main, cx),
+        Command::ToggleWindow | Command::ShowWindow | Command::HideWindow => {
+            if let Some(handle) = window {
+                let _ = handle.update(cx, |_, window, _| {
+                    // A click hides the window when it's in front, else raises it.
+                    let hide =
+                        command == Command::HideWindow || command == Command::ToggleWindow && window.is_window_active();
+                    if hide { window.remove_window() } else { window.activate_window() }
+                });
+            }
+        }
+        Command::PlayPause => main.update(cx, |this, cx| this.toggle_play(cx)),
+        Command::Next => main.update(cx, |this, cx| this.skip(1, false, cx)),
+        Command::Previous => main.update(cx, |this, cx| this.previous(cx)),
+        Command::Quit => cx.quit(),
+        Command::TrayGone => {
+            main.update(cx, |this, _| this.tray_shown = false);
+            // Nothing could bring a closed window back now.
+            reopen(main, cx);
+        }
+        Command::TrayBack => main.update(cx, |this, _| this.tray_shown = true),
     }
 }
 
@@ -2137,25 +2476,26 @@ impl LocalPlaylist {
             )
             .child(
                 h_flex()
-                    .w(px(212.))
+                    .w(px(244.))
                     .flex_none()
                     .gap_2()
+                    .child(
+                        Button::new("lyrics")
+                            .ghost()
+                            .small()
+                            .icon(IconName::MicVocal)
+                            .toggled(self.panel == Panel::Lyrics && self.view == View::Playlist)
+                            .tooltip("Lyrics")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Lyrics, cx))),
+                    )
                     .child(
                         Button::new("visualizer")
                             .ghost()
                             .small()
                             .icon(IconName::AudioLines)
-                            .toggled(self.show_visualizer && self.view == View::Playlist)
+                            .toggled(self.panel == Panel::Visualizer && self.view == View::Playlist)
                             .tooltip("Visualizer")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.view == View::Playlist {
-                                    this.show_visualizer = !this.show_visualizer;
-                                } else {
-                                    this.view = View::Playlist;
-                                    this.show_visualizer = true;
-                                }
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Visualizer, cx))),
                     )
                     .child(
                         Icon::new(if settings.volume <= 0.001 { IconName::VolumeX } else { IconName::Volume2 })
@@ -2214,8 +2554,11 @@ impl Render for LocalPlaylist {
                         .h_full()
                         .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
                         .child(div().flex_1().min_h_0().child(match self.view {
-                            View::Playlist if self.show_visualizer => self.render_visualizer(cx).into_any_element(),
-                            View::Playlist => self.render_main(window, cx).into_any_element(),
+                            View::Playlist => match self.panel {
+                                Panel::Visualizer => self.render_visualizer(cx).into_any_element(),
+                                Panel::Lyrics => self.lyrics.clone().into_any_element(),
+                                Panel::Tracks => self.render_main(window, cx).into_any_element(),
+                            },
                             View::Settings => self.render_settings(window, cx).into_any_element(),
                         })),
                 ),

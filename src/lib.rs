@@ -11,6 +11,9 @@ compile_error!("on native targets the `ui` feature needs `desktop`");
 pub mod app;
 pub mod cover;
 pub mod download;
+#[cfg(feature = "desktop")]
+pub mod instance;
+pub mod lyrics;
 pub mod mem;
 pub mod model;
 #[cfg(feature = "desktop")]
@@ -22,6 +25,8 @@ pub mod sponsorblock;
 pub mod storage;
 #[cfg(feature = "ui")]
 pub mod theme;
+#[cfg(feature = "desktop")]
+pub mod tray;
 
 // Desktop-only implementations, with web stand-ins of the same API so the UI
 // code compiles unchanged for the browser (where those features are hidden).
@@ -89,6 +94,7 @@ gpui_kit::assets::icon_assets!(
         LoaderCircle,
         LogIn,
         LogOut,
+        MicVocal,
         Pause,
         Play,
         Plus,
@@ -162,11 +168,11 @@ pub fn run_desktop(paths: model::Paths) {
         theme::init(cx);
         let appearance = model::Library::load(&paths.library_file()).map(|l| l.settings.appearance).unwrap_or_default();
         theme::apply(appearance, None, cx);
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
-        gpui_kit::open_window(window_options(cx), cx, |window, cx| {
-            cx.new(|cx| app::LocalPlaylist::new(paths.clone(), window, cx))
-        })
-        .expect("failed to open window");
+        // The app quits when its window closes, unless it keeps playing in
+        // the background with a tray icon (`app::window_closed`).
+        cx.set_quit_mode(QuitMode::Explicit);
+        let main = app::open(paths.clone(), cx);
+        cx.on_window_closed(move |cx, _| app::window_closed(&main, cx)).detach();
         cx.activate(true);
     });
 }

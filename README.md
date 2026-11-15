@@ -66,7 +66,13 @@ them in the app, also offline. No account, no ads, no tracking.
   "Download all" saves a whole playlist at once.
 - **Skips the boring parts** of YouTube videos with [SponsorBlock](https://sponsor.ajay.app/):
   talking, sponsors, "like and subscribe" reminders. You choose what to skip, or turn it off.
+- **Lyrics, karaoke style:** the line being sung lights up word by word and stays in the
+  middle; click a line to jump to it. Songs without timed lyrics show the plain text.
+  Uploads like "Artist - Title (Official Video)" are matched to the right song.
 - **Visualizer:** bars, or a circle over a night sky that moves with the music.
+- **Keeps playing in the background:** close the window and the music goes on, with an
+  icon in the system tray to bring it back, pause, skip or quit (desktop app; turn it off
+  in Settings).
 - **Light and dark themes**, with colours taken from the cover of what's playing.
 - **Removed by mistake?** Removed tracks are kept for a while (up to 2 GB), so adding one
   back is instant.
@@ -125,9 +131,14 @@ in doesn't work for you, you can paste cookies from your browser instead; see
 - **Nothing is collected.** There are no accounts, ads, analytics or tracking. Your
   playlists and settings are a file on your computer.
 - **The app only talks to** YouTube and SoundCloud (to look up and download tracks),
-  SponsorBlock (if turned on), and GitHub (to download yt-dlp and QuickJS).
+  SponsorBlock (if turned on), the lyrics databases LRCLIB and lrc.red (only while the
+  lyrics page is open), and GitHub (to download yt-dlp and QuickJS).
 - **SponsorBlock isn't told which video you're playing:** the app asks about a group of
   many videos at once and picks out the right one itself.
+- **Lyrics are looked up only when you open the lyrics page,** for the song playing then.
+  The lyrics services see that song's title and artist (there's no way to ask for lyrics
+  without saying which song), never who you are: no account, key or cookies. Each song is
+  looked up once and kept on your computer.
 - **Logging in is optional.** Without it, the app uses only what YouTube and SoundCloud
   show to any visitor, and sends no cookies. If you do log in, your login stays on your
   computer, encrypted, with the key in your system keyring (or, without one, in a private
@@ -149,15 +160,22 @@ in doesn't work for you, you can paste cookies from your browser instead; see
   limit set in Settings.
 - Network destinations: YouTube, SoundCloud and their CDNs; SponsorBlock
   (`sponsor.ajay.app`, unless turned off), which gets only the first 4 characters of the
-  video id's SHA-256 hash; GitHub, to download or update yt-dlp and QuickJS; and, only on
-  systems without a ready-made yt-dlp build, PyPI.
+  video id's SHA-256 hash; LRCLIB (`lrclib.net`) and lrc.red, with the title, artist and
+  length of the song whose lyrics you open; GitHub, to download or update yt-dlp and
+  QuickJS; and, only on systems without a ready-made yt-dlp build, PyPI.
+- Lyrics are cached in `~/.cache/local-playlist/lyrics/` (on Linux), one small file per
+  song.
+- The tray icon uses the desktop's StatusNotifierItem tray on Linux (KDE, most other
+  desktops, and GNOME with the AppIndicator extension) and the notification area on
+  Windows. Without a tray, closing the window quits the app.
 
 </details>
 
 ## Web version (self-hosted)
 
 Have a home server? It can run Local Playlist for any browser on your network. Your
-playlists stay in each browser; the server only looks up links and streams the audio.
+playlists stay in each browser; the server only looks up links and lyrics, and streams
+the audio.
 Logins, private playlists and offline folders are desktop-only.
 
 With Docker:
