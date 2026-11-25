@@ -29,21 +29,20 @@ impl LocalPlaylist {
         self.components.as_ref().is_some_and(|s| matches!(s.ytdlp, State::Missing) || matches!(s.js, State::Missing))
     }
 
-    pub(super) fn components_label(&self) -> SharedString {
+    /// The sidebar's note above Settings: the server on the web; on the
+    /// desktop only an install in progress or a missing component (versions
+    /// are in Settings).
+    pub(super) fn components_label(&self) -> Option<SharedString> {
         #[cfg(target_family = "wasm")]
-        return format!("Server: {}", crate::web::server_host()).into();
+        return Some(format!("Server: {}", crate::web::server_host()).into());
         #[allow(unreachable_code)]
         if let Some(st) = &self.installing {
-            return st.lock().unwrap().0.clone().into();
+            return Some(st.lock().unwrap().0.clone().into());
         }
-        match &self.components {
-            None => "Checking components…".into(),
-            Some(s) => match (&s.ytdlp, &s.js) {
-                (State::Missing, _) => "yt-dlp is missing".into(),
-                (_, State::Missing) => "JavaScript runtime is missing".into(),
-                (State::Managed(i), _) => format!("yt-dlp {}", i.short()).into(),
-                (State::System(v), _) => format!("{v} (system)").into(),
-            },
+        match self.components.as_ref().map(|s| (&s.ytdlp, &s.js)) {
+            Some((State::Missing, _)) => Some("yt-dlp is missing".into()),
+            Some((_, State::Missing)) => Some("JavaScript runtime is missing".into()),
+            _ => None,
         }
     }
 
@@ -570,59 +569,6 @@ impl LocalPlaylist {
                                     })),
                             ),
                     )
-                    .child(
-                        v_flex()
-                            .gap_3()
-                            .child(section("Appearance", "Material-style light and dark themes.".into()))
-                            .child(h_flex().gap_1().children(
-                                [
-                                    (Appearance::System, "System", IconName::Monitor),
-                                    (Appearance::Light, "Light", IconName::Sun),
-                                    (Appearance::Dark, "Dark", IconName::Moon),
-                                ]
-                                .map(|(choice, label, icon)| {
-                                    Button::new(label)
-                                        .small()
-                                        .icon(icon)
-                                        .label(label)
-                                        .when(self.library.settings.appearance == choice, |b| b.primary())
-                                        .when(self.library.settings.appearance != choice, |b| b.ghost())
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.library.settings.appearance = choice;
-                                            this.save();
-                                            crate::theme::apply(choice, Some(window), cx);
-                                            cx.notify();
-                                        }))
-                                }),
-                            ))
-                            .child(
-                                h_flex()
-                                    .gap_4()
-                                    .justify_between()
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .gap_1()
-                                            .child(div().text_sm().font_medium().child("Colours from cover art"))
-                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
-                                                "Tint the accent colour with the dominant colour of the playing track's cover.",
-                                            )),
-                                    )
-                                    .child(
-                                        gpui_kit::component::switch::Switch::new("cover-colors")
-                                            .checked(self.library.settings.cover_colors)
-                                            .on_click(cx.listener(|this, on: &bool, _, cx| {
-                                                this.library.settings.cover_colors = *on;
-                                                this.save();
-                                                this.apply_cover_colors(cx);
-                                                cx.notify();
-                                            })),
-                                    ),
-                            ),
-                    )
-                    .child(self.render_sponsorblock(cx))
-                    .when(!crate::WEB, |d| d.child(self.render_background(cx)).child(self.render_discord(cx)))
                     .when(crate::WEB, |d| {
                         d.child(
                             v_flex()
@@ -684,102 +630,86 @@ impl LocalPlaylist {
                                     }),
                             ),
                     ))
+                    .child(
+                        v_flex()
+                            .gap_3()
+                            .child(section("Appearance", "Material-style light and dark themes.".into()))
+                            .child(h_flex().gap_1().children(
+                                [
+                                    (Appearance::System, "System", IconName::Monitor),
+                                    (Appearance::Light, "Light", IconName::Sun),
+                                    (Appearance::Dark, "Dark", IconName::Moon),
+                                ]
+                                .map(|(choice, label, icon)| {
+                                    Button::new(label)
+                                        .small()
+                                        .icon(icon)
+                                        .label(label)
+                                        .when(self.library.settings.appearance == choice, |b| b.primary())
+                                        .when(self.library.settings.appearance != choice, |b| b.ghost())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.library.settings.appearance = choice;
+                                            this.save();
+                                            crate::theme::apply(choice, Some(window), cx);
+                                            cx.notify();
+                                        }))
+                                }),
+                            ))
+                            .child(
+                                h_flex()
+                                    .gap_4()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap_1()
+                                            .child(div().text_sm().font_medium().child("Colours from cover art"))
+                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
+                                                "Tint the accent colour with the dominant colour of the playing track's cover.",
+                                            )),
+                                    )
+                                    .child(
+                                        gpui_kit::component::switch::Switch::new("cover-colors")
+                                            .checked(self.library.settings.cover_colors)
+                                            .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                                this.library.settings.cover_colors = *on;
+                                                this.save();
+                                                this.apply_cover_colors(cx);
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .child(self.render_sponsorblock(cx))
+                    .when(!crate::WEB, |d| d.child(self.render_discord(cx)))
                     .when(!crate::WEB, |d| d.child(self.render_storage(cx))),
             )
     }
 
     fn render_sponsorblock(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::component::checkbox::Checkbox;
         use gpui_kit::component::switch::Switch;
         let theme = cx.theme().clone();
-        let settings = &self.library.settings;
-        let enabled = settings.sponsorblock;
-        v_flex()
-            .gap_3()
+        h_flex()
+            .gap_4()
+            .justify_between()
             .child(
-                h_flex()
-                    .gap_4()
-                    .justify_between()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(div().text_lg().font_semibold().child("SponsorBlock"))
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(
-                                "Skip parts of YouTube tracks marked by the SponsorBlock community. Files aren't cut; playback jumps past the segments. Lookups send only a short hash prefix, not the video id.",
-                            )),
-                    )
-                    .child(Switch::new("sponsorblock").checked(enabled).on_click(cx.listener(|this, on: &bool, _, cx| {
-                        this.library.settings.sponsorblock = *on;
-                        this.save();
-                        cx.notify();
-                    }))),
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(div().text_lg().font_semibold().child("SponsorBlock"))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(
+                        "Skip parts of YouTube tracks marked by the SponsorBlock community: sponsors, self-promotion, \"like and subscribe\" reminders, intros, outros, recaps, filler and non-music parts. Files aren't cut; playback jumps past the segments. Lookups send only a short hash prefix, not the video id.",
+                    )),
             )
-            .when(enabled, |d| {
-                d.child(
-                    v_flex().gap_2().p_4().rounded_lg().border_1().border_color(theme.border).children(
-                        crate::sponsorblock::CATEGORIES.iter().map(|&(key, label, desc, _)| {
-                            let checked = settings.sponsorblock_categories.iter().any(|c| c == key);
-                            h_flex()
-                                .gap_3()
-                                .child(Checkbox::new(key).label(label).checked(checked).on_click(cx.listener(
-                                    move |this, on: &bool, _, cx| {
-                                        let cats = &mut this.library.settings.sponsorblock_categories;
-                                        cats.retain(|c| c != key);
-                                        if *on {
-                                            cats.push(key.to_string());
-                                        }
-                                        this.save();
-                                        cx.notify();
-                                    },
-                                )))
-                                .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(desc))
-                        }),
-                    ),
-                )
-            })
-    }
-
-    /// Desktop: keep playing with the window closed (tray icon).
-    fn render_background(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        #[cfg(feature = "desktop")]
-        {
-            use gpui_kit::component::switch::Switch;
-            let theme = cx.theme().clone();
-            let on = self.library.settings.background;
-            let no_tray = on && self.tray.is_none();
-            h_flex()
-                .gap_4()
-                .justify_between()
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
-                        .child(div().text_lg().font_semibold().child("Play in the background"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(
-                            "Closing the window keeps the music playing, with an icon in the system tray to bring the window back, control playback or quit.",
-                        ))
-                        .when(no_tray, |d| {
-                            d.child(div().text_sm().text_color(theme.warning).child(
-                                "No system tray was found, so closing the window quits. On GNOME, the AppIndicator extension adds one.",
-                            ))
-                        }),
-                )
-                .child(Switch::new("background").checked(on).on_click(cx.listener(|this, on: &bool, _, cx| {
-                    this.library.settings.background = *on;
+            .child(Switch::new("sponsorblock").checked(self.library.settings.sponsorblock).on_click(cx.listener(
+                |this, on: &bool, _, cx| {
+                    this.library.settings.sponsorblock = *on;
                     this.save();
-                    this.update_tray();
                     cx.notify();
-                })))
-                .into_any_element()
-        }
-        #[cfg(not(feature = "desktop"))]
-        {
-            let _ = cx;
-            div().into_any_element()
-        }
+                },
+            )))
     }
 
     /// Desktop: Discord Rich Presence.
@@ -876,6 +806,13 @@ impl LocalPlaylist {
                                     ))
                                     .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(status_example)),
                             )
+                            .child(option(
+                                "discord-hide-cover",
+                                "Hide cover",
+                                "Shows the Local Playlist icon instead of the song's cover.",
+                                discord.hide_cover,
+                                set(|d, on| d.hide_cover = on),
+                            ))
                             .child(option(
                                 "discord-song",
                                 "\u{201c}Listen to song\u{201d} button",

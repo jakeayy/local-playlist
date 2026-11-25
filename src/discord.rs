@@ -333,9 +333,10 @@ impl Worker {
         }
     }
 
-    /// A URL of the track's cover that Discord can load, if there is one.
+    /// A URL of the track's cover that Discord can load, if there is one
+    /// and it isn't hidden (then Discord shows the app's icon).
     fn cover_url(&mut self, a: &Activity) -> Option<String> {
-        if !crate::cover::valid_id(a.platform, &a.source_id) {
+        if a.settings.hide_cover || !crate::cover::valid_id(a.platform, &a.source_id) {
             return None;
         }
         match a.platform {
@@ -653,6 +654,16 @@ mod tests {
         let json = activity_json(&no_artist, None);
         assert_eq!(json["status_display_type"], 0);
         assert!(json.get("state").is_none());
+    }
+
+    #[test]
+    fn hides_the_cover() {
+        let dir = std::env::temp_dir();
+        let mut worker = Worker::new(Paths { data: dir.clone(), cache: dir }, Default::default());
+        let settings = DiscordSettings { enabled: true, ..Default::default() };
+        let cover = worker.cover_url(&activity(settings));
+        assert_eq!(cover.as_deref(), Some("https://i.ytimg.com/vi/4Skf2zDFnsM/mqdefault.jpg"));
+        assert_eq!(worker.cover_url(&activity(DiscordSettings { hide_cover: true, ..settings })), None);
     }
 
     #[test]

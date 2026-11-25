@@ -17,31 +17,21 @@ pub struct Segment {
     pub end: f64,
 }
 
-/// Skippable categories: (API name, label, description, enabled by default).
-pub const CATEGORIES: &[(&str, &str, &str, bool)] = &[
-    ("music_offtopic", "Non-music", "Talking, skits and other non-music parts of music videos", true),
-    ("sponsor", "Sponsor", "Paid promotion and sponsored segments", true),
-    ("selfpromo", "Self-promotion", "Unpaid promotion: merch, donations, shout-outs", true),
-    ("interaction", "Interaction reminder", "\"Like and subscribe\" and similar reminders", true),
-    ("intro", "Intro", "Intro animations and pauses without content", false),
-    ("outro", "Outro", "Credits and end cards", false),
-    ("preview", "Preview / recap", "Previews of what's coming up, recaps", false),
-    ("filler", "Filler", "Tangents and jokes not needed for the main content", false),
-];
-
-pub fn default_categories() -> Vec<String> {
-    CATEGORIES.iter().filter(|c| c.3).map(|c| c.0.to_string()).collect()
-}
+/// The categories skipped (SponsorBlock's API names): all of them. Non-music
+/// parts, sponsors, self-promotion, "like and subscribe" reminders, intros,
+/// outros, previews and recaps, and filler.
+pub const CATEGORIES: &[&str] =
+    &["music_offtopic", "sponsor", "selfpromo", "interaction", "intro", "outro", "preview", "filler"];
 
 /// Segments shorter than this aren't worth a seek.
 const MIN_LEN: f64 = 1.0;
 
-/// Where to jump to when playback is at `pos` (seconds), if inside an enabled
+/// Where to jump to when playback is at `pos` (seconds), if inside a
 /// segment. Overlapping and touching segments are chained, so one jump clears
 /// them all.
-pub fn skip_target(segments: &[Segment], enabled: &[String], pos: f64) -> Option<f64> {
+pub fn skip_target(segments: &[Segment], pos: f64) -> Option<f64> {
     let mut target: Option<f64> = None;
-    for (start, end) in skipped_ranges(segments, enabled) {
+    for (start, end) in skipped_ranges(segments) {
         let at = target.unwrap_or(pos);
         // Small slack at the end so we never re-trigger right after a jump.
         if start <= at + 0.05 && at < end - 0.3 {
@@ -53,10 +43,11 @@ pub fn skip_target(segments: &[Segment], enabled: &[String], pos: f64) -> Option
 
 /// The (start, end) ranges that get skipped, sorted, with overlapping and
 /// touching segments merged (what the player bar shows).
-pub fn skipped_ranges(segments: &[Segment], enabled: &[String]) -> Vec<(f64, f64)> {
+pub fn skipped_ranges(segments: &[Segment]) -> Vec<(f64, f64)> {
     let mut ranges: Vec<(f64, f64)> = segments
         .iter()
-        .filter(|s| s.end - s.start >= MIN_LEN && enabled.contains(&s.category))
+        // A category SponsorBlock adds later isn't skipped unasked.
+        .filter(|s| s.end - s.start >= MIN_LEN && CATEGORIES.contains(&s.category.as_str()))
         .map(|s| (s.start, s.end))
         .collect();
     ranges.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -79,7 +70,7 @@ const API: &str = "https://sponsor.ajay.app/api/skipSegments";
 pub fn fetch(video_id: &str) -> anyhow::Result<Vec<Segment>> {
     use sha2::Digest as _;
     let hash: String = sha2::Sha256::digest(video_id.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
-    let categories = serde_json::to_string(&CATEGORIES.iter().map(|c| c.0).collect::<Vec<_>>())?;
+    let categories = serde_json::to_string(CATEGORIES)?;
     let mut resp = crate::sources::http()
         .get(format!("{API}/{}", &hash[..4]))
         .query("categories", &categories)
@@ -163,22 +154,21 @@ mod tests {
     }
 
     #[test]
-    fn skips_enabled_segments_only() {
-        let segs = [seg("sponsor", 10., 20.), seg("intro", 0., 5.)];
-        let on = vec!["sponsor".to_string()];
-        assert_eq!(skip_target(&segs, &on, 2.), None);
-        assert_eq!(skip_target(&segs, &on, 9.), None);
-        assert_eq!(skip_target(&segs, &on, 10.), Some(20.));
-        assert_eq!(skip_target(&segs, &on, 15.), Some(20.));
-        assert_eq!(skip_target(&segs, &on, 19.8), None);
-        assert_eq!(skip_target(&segs, &on, 25.), None);
+    fn skips_known_categories_only() {
+        let segs = [seg("sponsor", 10., 20.), seg("intro", 0., 5.), seg("something_new", 30., 40.)];
+        assert_eq!(skip_target(&segs, 2.), Some(5.));
+        assert_eq!(skip_target(&segs, 9.), None);
+        assert_eq!(skip_target(&segs, 10.), Some(20.));
+        assert_eq!(skip_target(&segs, 15.), Some(20.));
+        assert_eq!(skip_target(&segs, 19.8), None);
+        assert_eq!(skip_target(&segs, 25.), None);
+        assert_eq!(skip_target(&segs, 32.), None);
     }
 
     #[test]
     fn chains_overlapping_segments() {
         let segs = [seg("music_offtopic", 30., 45.), seg("sponsor", 10., 31.), seg("selfpromo", 45., 50.)];
-        let on = default_categories();
-        assert_eq!(skip_target(&segs, &on, 12.), Some(50.));
+        assert_eq!(skip_target(&segs, 12.), Some(50.));
     }
 
     #[test]
@@ -189,12 +179,12 @@ mod tests {
             seg("music_offtopic", 30., 45.),
             seg("intro", 0., 5.),
         ];
-        assert_eq!(skipped_ranges(&segs, &default_categories()), vec![(10., 50.)]);
+        assert_eq!(skipped_ranges(&segs), vec![(0., 5.), (10., 50.)]);
     }
 
     #[test]
     fn ignores_tiny_segments() {
-        assert_eq!(skip_target(&[seg("sponsor", 10., 10.5)], &default_categories(), 10.1), None);
+        assert_eq!(skip_target(&[seg("sponsor", 10., 10.5)], 10.1), None);
     }
 
     #[cfg(not(target_family = "wasm"))]
