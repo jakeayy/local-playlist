@@ -38,6 +38,7 @@ The server embeds the web UI only if `web/dist/` exists when it is built (`build
 | `src/sponsorblock.rs` | SponsorBlock segments (privacy-preserving hash-prefix lookups) |
 | `src/lyrics/` | Lyrics: artist/title guessing for uploads (`query.rs`), LRC and Lyricsfile parsing (`formats.rs`), LRCLIB and lrc.red lookups, disk cache |
 | `src/tray.rs`, `src/tray/` | Tray icon for playing in the background (ksni on Linux, Shell_NotifyIcon on Windows) |
+| `src/discord.rs` | Discord Rich Presence (off by default): local IPC to the Discord app, on its own thread |
 | `src/instance.rs` | One desktop app at a time: a second start shows the running one's window |
 | `src/spectrum.rs` | FFT and bands for the visualizer (no dependencies, builds for wasm) |
 | `src/secrets.rs` | Encrypted cookie storage (ChaCha20-Poly1305, key in the OS keyring) |
@@ -94,8 +95,12 @@ cargo +nightly check --locked --lib --target wasm32-unknown-unknown --no-default
   yt-dlp and QuickJS, and work in temporary directories, not the user's library. A bare
   `cargo test -- --ignored` also runs tests that need input and fail without it:
   `decode_file` (`LP_DECODE_FILE=<audio file>`), `calibrate`
-  (`LP_CALIBRATE=<file>:<file>`, with `--nocapture`), and the ffmpeg ones
-  (`embeds_into_each_format`, `matches_ffmpeg_decode`).
+  (`LP_CALIBRATE=<file>:<file>`, with `--nocapture`), the ffmpeg ones
+  (`embeds_into_each_format`, `matches_ffmpeg_decode`), and `discord_shows_on_profile`
+  (needs the Discord app running; it shows a song on that account's profile for ~30 s).
+  `draws_accent_icons` redraws `docs/discord/accent/` (run it after changing the theme's
+  primary colours or `ACCENT_STEPS` in `discord.rs`; the app links to those files on
+  `main`).
 - Use public links only, in tests and anywhere else.
 - Release builds (`opt-level = "s"`, fat LTO, one codegen unit) are slow. Use `cargo check`
   or debug builds while iterating.
@@ -142,9 +147,11 @@ These are product requirements, not style preferences:
 - No telemetry, analytics or new network destinations. The app talks only to YouTube and
   SoundCloud (and their image/script CDNs), SponsorBlock, LRCLIB and lrc.red (lyrics, only
   while the lyrics page is shown), GitHub (component downloads) and PyPI (the `yt-dlp-ejs`
-  wheel, on platforms without a yt-dlp build). A new destination needs the maintainer's
-  explicit approval. (Genius sits behind a bot challenge and Musixmatch needs a session
-  token, so neither is used for lyrics.)
+  wheel, on platforms without a yt-dlp build), plus, if the user turns on Discord Rich
+  Presence, the Discord app on the same computer (its local IPC socket; never Discord's
+  servers directly). A new destination needs the maintainer's explicit approval. (Genius
+  sits behind a bot challenge and Musixmatch needs a session token, so neither is used for
+  lyrics.)
 - Platform cookies go only to their own platform, and only when needed: the anonymous
   path comes first, and the session is used for personal lists or as a retry.
 - The server and the web UI never receive platform credentials. The server accepts only

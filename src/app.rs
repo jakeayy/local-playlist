@@ -183,6 +183,9 @@ pub struct LocalPlaylist {
     /// What the tray last showed.
     #[cfg(feature = "desktop")]
     tray_status: crate::tray::Status,
+    /// Discord Rich Presence, while it's on.
+    #[cfg(feature = "desktop")]
+    presence: Option<crate::discord::Presence>,
     /// Track (platform, id) whose cover the visualizer shows or is loading.
     cover_for: Option<(Platform, String)>,
     /// Cover of the playing track (player bar).
@@ -436,6 +439,8 @@ impl LocalPlaylist {
             tray_shown: false,
             #[cfg(feature = "desktop")]
             tray_status: Default::default(),
+            #[cfg(feature = "desktop")]
+            presence: None,
             cover_for: None,
             now_cover: None,
             stale_covers: Vec::new(),
@@ -450,7 +455,10 @@ impl LocalPlaylist {
         this.select(selected, window, cx);
         this.refresh_components(cx);
         #[cfg(feature = "desktop")]
-        this.update_tray();
+        {
+            this.update_tray();
+            this.update_presence();
+        }
         #[cfg(target_family = "wasm")]
         cx.spawn(async move |this, cx| {
             let ok = crate::web::api::check().await;
@@ -614,6 +622,44 @@ impl LocalPlaylist {
         if status != self.tray_status {
             tray.set_status(&status);
             self.tray_status = status;
+        }
+    }
+
+    // ------------------------------------------------------------- discord
+
+    /// Connect to Discord while Rich Presence is on; dropping the handle
+    /// disconnects, which clears what Discord shows.
+    #[cfg(feature = "desktop")]
+    fn update_presence(&mut self) {
+        if !self.library.settings.discord.enabled {
+            self.presence = None;
+        } else if self.presence.is_none() {
+            self.presence = Some(crate::discord::Presence::start(self.paths.clone()));
+        }
+    }
+
+    /// Keep Discord showing what's playing (paused too; nothing when stopped).
+    #[cfg(feature = "desktop")]
+    fn sync_presence(&mut self, cx: &mut Context<Self>) {
+        if self.presence.is_none() {
+            return;
+        }
+        let duration = self.total_duration();
+        let now = match (&self.now, &self.audio) {
+            (Some(n), Some(a)) if self.state == PlayState::Playing && a.is_loaded() => Some(crate::discord::Now {
+                track: &n.track,
+                position: a.position(),
+                duration,
+                paused: a.is_paused(),
+                buffering: a.is_buffering(),
+                accent: self.accent_shown,
+            }),
+            _ => None,
+        };
+        let Some(presence) = self.presence.as_mut() else { return };
+        // Settings shows whether Discord was found.
+        if presence.update(now, &self.library.settings.discord) && self.view == View::Settings {
+            cx.notify();
         }
     }
 
@@ -1640,7 +1686,10 @@ impl LocalPlaylist {
             self.pending_notes.drain(..excess);
         }
         #[cfg(feature = "desktop")]
-        self.sync_tray();
+        {
+            self.sync_tray();
+            self.sync_presence(cx);
+        }
     }
 
     /// What needs the window: notifications, the seek slider, and freeing

@@ -100,6 +100,7 @@ Where things live:
 | `src/lyrics/` | Lyrics lookup (LRCLIB, lrc.red), artist/title guessing, LRC and Lyricsfile parsing |
 | `src/app/lyrics.rs` | The lyrics page (karaoke highlighting) |
 | `src/tray.rs` | Tray icon for playing in the background (Linux: ksni, Windows: Shell_NotifyIcon) |
+| `src/discord.rs` | Discord Rich Presence over the Discord app's local IPC (images: `docs/discord/`; `draws_accent_icons` redraws the accent ones) |
 
 [AGENTS.md](AGENTS.md) has a more detailed map and the project's conventions.
 
