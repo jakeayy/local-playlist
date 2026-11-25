@@ -4,14 +4,25 @@
 
 use std::f32::consts::PI;
 
-/// FFT size: ~46 ms at 44.1 kHz, 21.5 Hz per bin.
-pub const FFT_LEN: usize = 2048;
+/// Longest FFT a [`Tuning`] may use: callers pass at least this many samples.
+pub const MAX_FFT_LEN: usize = 8192;
+/// Every FFT window peaks this many samples before the newest one (half the
+/// bars' FFT, whose window is a plain Hann). A longer FFT gets its finer
+/// frequency steps from the older audio but sees a hit as soon as the short
+/// one: with a centred window the circle's spikes rose ~50 ms after its disc.
+const WINDOW_FALL: usize = 1024;
 
 /// How bands are measured and smoothed.
 #[derive(Clone, Copy, Debug)]
 pub struct Tuning {
+    /// FFT size: a power of two up to [`MAX_FFT_LEN`]. Longer tells low notes
+    /// apart better (at 44.1 kHz, 2048 covers 46 ms in 21.5 Hz bins, 8192
+    /// covers 186 ms in 5.4 Hz bins), and a hit fades out of it more slowly.
+    pub fft_len: usize,
     pub min_hz: f32,
     pub max_hz: f32,
+    /// Bands evenly spaced in Hz rather than in octaves (for a narrow range).
+    pub linear: bool,
     /// Level range mapped to 0..1 (after the slope).
     pub floor_db: f32,
     pub ceil_db: f32,
@@ -40,8 +51,10 @@ pub struct Tuning {
 impl Tuning {
     /// Even, lively bars.
     pub const BARS: Tuning = Tuning {
+        fft_len: 2048,
         min_hz: 30.0,
         max_hz: 16_000.0,
+        linear: false,
         floor_db: -72.0,
         ceil_db: -12.0,
         slope_db_per_octave: 3.0,
@@ -56,30 +69,43 @@ impl Tuning {
         adapt_secs: 1.0,
     };
 
-    /// Bass-led ring that jumps on hits: no treble boost, mostly bass and
-    /// mids, relative to the recent average, gated.
+    /// Trap Nation-style ring: only the bass, 20–130 Hz in even steps of
+    /// about 2.75 Hz, so kicks and 808 notes show up as separate lobes (which
+    /// takes the long FFT). Up at once on hits and quickly back, without
+    /// adapting, so it stays out while the bass keeps going; the curve keeps
+    /// the gaps between notes low.
     pub const CIRCLE: Tuning = Tuning {
-        min_hz: 30.0,
-        max_hz: 6_000.0,
-        floor_db: -50.0,
-        ceil_db: -6.0,
+        fft_len: 8192,
+        min_hz: 20.0,
+        max_hz: 130.0,
+        linear: true,
+        floor_db: -30.0,
+        ceil_db: -4.0,
         slope_db_per_octave: 0.0,
-        bass_rise_secs: 0.06,
-        bass_fall_secs: 0.2,
-        treble_rise_secs: 0.04,
-        treble_fall_secs: 0.2,
-        blur_passes: 2,
-        gate: 0.1,
-        curve: 1.4,
-        adapt: 0.8,
-        adapt_secs: 1.2,
+        bass_rise_secs: 0.015,
+        bass_fall_secs: 0.12,
+        treble_rise_secs: 0.015,
+        treble_fall_secs: 0.12,
+        blur_passes: 0,
+        gate: 0.0,
+        curve: 1.6,
+        adapt: 0.0,
+        adapt_secs: 1.0,
     };
 }
 
-/// Upper edge of what counts as bass for [`Spectrum::bass`].
-const BASS_HZ: f32 = 140.0;
-const BASS_LEVEL_RISE_SECS: f32 = 0.03;
-const BASS_LEVEL_FALL_SECS: f32 = 0.2;
+/// What [`Spectrum::bass`] measures: the power of the FFT bins in this range
+/// (kick drums and 808s), on a fixed dB scale where a full-scale sine is 0 dB.
+/// It's the same for every [`Tuning`]: the bands' adapting and gating would
+/// hide a bass line that keeps pounding, and the visualizer should pump with it.
+const BASS_LO_HZ: f32 = 20.0;
+const BASS_HI_HZ: f32 = 120.0;
+/// Levels mapped to 0..1. Loudly mastered tracks reach the top on kicks and
+/// fall well below it between them; quieter mixes jump less.
+const BASS_FLOOR_DB: f32 = -10.0;
+const BASS_CEIL_DB: f32 = 4.0;
+/// The bass level jumps up at once and falls back with this time constant.
+const BASS_FALL_SECS: f32 = 0.12;
 /// Peak markers hold, then fall at this speed (full height per second).
 const PEAK_HOLD_SECS: f32 = 0.35;
 const PEAK_FALL_PER_SEC: f32 = 0.6;
@@ -100,19 +126,29 @@ pub struct Spectrum {
     peak_age: Vec<f32>,
     /// Recent average level per band (for `Tuning::adapt`).
     avg: Vec<f32>,
-    /// Bass level of the latest frame (unsmoothed) and smoothed.
-    bass_raw: f32,
+    /// See [`Spectrum::bass`].
     bass: f32,
 }
 
 impl Spectrum {
     pub fn new(bands: usize, tuning: Tuning) -> Self {
-        let window: Vec<f32> =
-            (0..FFT_LEN).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / (FFT_LEN - 1) as f32).cos()).collect();
+        let len = tuning.fft_len;
+        assert!(len.is_power_of_two() && len <= MAX_FFT_LEN, "FFT size {len}");
+        // A Hann window, but one that peaks `WINDOW_FALL` samples before the
+        // newest whatever its length: rising slowly over the older audio,
+        // falling quickly over the newest.
+        let fall = WINDOW_FALL.min(len / 2);
+        let rise = len - fall;
+        let window: Vec<f32> = (0..len)
+            .map(|i| {
+                let x = if i < rise { i as f32 / rise as f32 } else { 1.0 + (i - rise) as f32 / fall as f32 };
+                0.5 - 0.5 * (PI * x).cos()
+            })
+            .collect();
         let window_sum = window.iter().sum();
-        let twiddles = (0..FFT_LEN / 2)
+        let twiddles = (0..len / 2)
             .map(|k| {
-                let a = -2.0 * PI * k as f32 / FFT_LEN as f32;
+                let a = -2.0 * PI * k as f32 / len as f32;
                 (a.cos(), a.sin())
             })
             .collect();
@@ -121,14 +157,13 @@ impl Spectrum {
             window,
             window_sum,
             twiddles,
-            re: vec![0.0; FFT_LEN],
-            im: vec![0.0; FFT_LEN],
-            mags: vec![0.0; FFT_LEN / 2],
+            re: vec![0.0; len],
+            im: vec![0.0; len],
+            mags: vec![0.0; len / 2],
             bands: vec![0.0; bands],
             peaks: vec![0.0; bands],
             peak_age: vec![0.0; bands],
             avg: vec![0.0; bands],
-            bass_raw: 0.0,
             bass: 0.0,
         }
     }
@@ -141,39 +176,43 @@ impl Spectrum {
         &self.peaks
     }
 
-    /// Bass level (0..1) of the latest frame, unsmoothed: jumps on kicks.
-    pub fn bass_raw(&self) -> f32 {
-        self.bass_raw
-    }
-
-    /// Smoothed bass level (0..1), for pulsing.
+    /// Bass level (0..1) for things that jump with the beat: up at once on a
+    /// kick or a bass note, back down within a few tenths of a second, and
+    /// high for as long as the bass keeps playing. Measured on a fixed scale,
+    /// whatever the [`Tuning`].
     pub fn bass(&self) -> f32 {
         self.bass
     }
 
     /// True once everything has fallen back to zero (nothing left to animate).
     pub fn is_silent(&self) -> bool {
-        self.bands.iter().chain(&self.peaks).all(|&v| v < 0.002)
+        self.bands.iter().chain(&self.peaks).chain([&self.bass]).all(|&v| v < 0.002)
     }
 
     /// Frequency range of band `b` (of `n`) at sample rate `rate`.
     fn band_range(&self, b: usize, n: usize, rate: u32) -> (f32, f32) {
         let t = &self.tuning;
-        let ratio = (t.max_hz.min(rate as f32 / 2.0) / t.min_hz).ln();
-        (t.min_hz * (ratio * b as f32 / n as f32).exp(), t.min_hz * (ratio * (b + 1) as f32 / n as f32).exp())
+        let max_hz = t.max_hz.min(rate as f32 / 2.0);
+        let edge = |b: usize| {
+            let f = b as f32 / n as f32;
+            if t.linear { t.min_hz + (max_hz - t.min_hz) * f } else { t.min_hz * ((max_hz / t.min_hz).ln() * f).exp() }
+        };
+        (edge(b), edge(b + 1))
     }
 
-    /// Advance by `dt` seconds. `samples` holds the latest [`FFT_LEN`] mono
-    /// samples at `rate` Hz, or `None` when nothing is playing (bars fall).
+    /// Advance by `dt` seconds. `samples` holds the latest mono samples at
+    /// `rate` Hz, at least [`Tuning::fft_len`] of them (any older ones are
+    /// ignored), or `None` when nothing is playing (bars fall).
     pub fn update(&mut self, samples: Option<(&[f32], u32)>, dt: f32) {
         let dt = dt.clamp(0.0, 0.25);
         let t = self.tuning;
         let n = self.bands.len();
         let mut targets = vec![0.0; n];
-        let mut bass_bands = 0;
+        let mut bass = 0.0;
         if let Some((samples, rate)) = samples {
             self.analyse(samples);
-            let bin_hz = rate as f32 / FFT_LEN as f32;
+            let bin_hz = rate as f32 / t.fft_len as f32;
+            bass = self.bass_level(bin_hz);
             for (b, target) in targets.iter_mut().enumerate() {
                 let (lo, hi) = self.band_range(b, n, rate);
                 let mag = self.band_magnitude(lo / bin_hz, hi / bin_hz);
@@ -187,15 +226,10 @@ impl Spectrum {
                     level = ((level - base) / (1.0 - base).max(0.05)).clamp(0.0, 1.0);
                 }
                 *target = ((level - t.gate) / (1.0 - t.gate)).clamp(0.0, 1.0).powf(t.curve);
-                if center <= BASS_HZ {
-                    bass_bands = b + 1;
-                }
             }
         }
-        self.bass_raw = targets[..bass_bands].iter().sum::<f32>() / bass_bands.max(1) as f32;
         let k = |secs: f32| 1.0 - (-dt / secs).exp();
-        let bass_k = k(if self.bass_raw > self.bass { BASS_LEVEL_RISE_SECS } else { BASS_LEVEL_FALL_SECS });
-        self.bass += (self.bass_raw - self.bass) * bass_k;
+        self.bass = if bass >= self.bass { bass } else { self.bass + (bass - self.bass) * k(BASS_FALL_SECS) };
         // Blend each band with its neighbours so adjacent bands don't jitter apart.
         for _ in 0..t.blur_passes {
             targets = (0..n)
@@ -225,6 +259,17 @@ impl Spectrum {
         }
     }
 
+    /// Bass level (0..1) of the latest analysis, unsmoothed; `bin_hz` is the
+    /// width of an FFT bin.
+    fn bass_level(&self, bin_hz: f32) -> f32 {
+        // `lo` is at least 1: bin 0 is the DC offset.
+        let lo = (BASS_LO_HZ / bin_hz).ceil() as usize;
+        let hi = ((BASS_HI_HZ / bin_hz).floor() as usize).min(self.mags.len() - 1);
+        let power: f32 = self.mags.get(lo..=hi).unwrap_or_default().iter().map(|m| m * m).sum();
+        let db = 10.0 * power.max(1e-12).log10();
+        ((db - BASS_FLOOR_DB) / (BASS_CEIL_DB - BASS_FLOOR_DB)).clamp(0.0, 1.0)
+    }
+
     /// Strongest bin between fractional bins `lo` and `hi`; bands narrower
     /// than a bin interpolate between the two nearest bins instead.
     fn band_magnitude(&self, lo: f32, hi: f32) -> f32 {
@@ -241,9 +286,10 @@ impl Spectrum {
 
     /// Windowed FFT of `samples` into `self.mags` (amplitude, full scale = 1).
     fn analyse(&mut self, samples: &[f32]) {
-        let len = samples.len().min(FFT_LEN);
+        let fft_len = self.tuning.fft_len;
+        let len = samples.len().min(fft_len);
         // Right-align: the newest samples matter most.
-        let start = FFT_LEN - len;
+        let start = fft_len - len;
         self.re[..start].fill(0.0);
         for i in 0..len {
             self.re[start + i] = samples[samples.len() - len + i] * self.window[start + i];
@@ -315,9 +361,9 @@ mod tests {
                 let (mut sum, mut high, mut jitter, mut frames) = ([0f32; 4], [0f32; 4], [0f32; 4], 0f32);
                 let mut sq = [0f32; 4];
                 let mut prev = vec![0.0; n];
-                let mut end = FFT_LEN;
+                let mut end = MAX_FFT_LEN;
                 while end <= mono.len() {
-                    s.update(Some((&mono[end - FFT_LEN..end], rate)), 1.0 / 60.0);
+                    s.update(Some((&mono[end - MAX_FFT_LEN..end], rate)), 1.0 / 60.0);
                     for (r, &(a, b)) in regions.iter().enumerate() {
                         let k = (b - a) as f32;
                         let m = s.bands()[a..b].iter().sum::<f32>() / k;
@@ -347,7 +393,7 @@ mod tests {
     }
 
     fn sine(hz: f32, amp: f32, rate: u32) -> Vec<f32> {
-        (0..FFT_LEN).map(|i| amp * (2.0 * PI * hz * i as f32 / rate as f32).sin()).collect()
+        (0..MAX_FFT_LEN).map(|i| amp * (2.0 * PI * hz * i as f32 / rate as f32).sin()).collect()
     }
 
     #[test]
@@ -355,7 +401,7 @@ mod tests {
         let mut s = Spectrum::new(48, Tuning::BARS);
         let rate = 44_100;
         // Bin 93 exactly.
-        let hz = 93.0 * rate as f32 / FFT_LEN as f32;
+        let hz = 93.0 * rate as f32 / Tuning::BARS.fft_len as f32;
         s.analyse(&sine(hz, 0.5, rate));
         let max = s.mags.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
         assert_eq!(max.0, 93);
@@ -381,5 +427,53 @@ mod tests {
             s.update(None, 1.0 / 60.0);
         }
         assert!(s.is_silent());
+    }
+
+    #[test]
+    fn bass_jumps_at_once_and_falls_back() {
+        let mut s = Spectrum::new(64, Tuning::BARS);
+        let rate = 44_100;
+        let dt = 1.0 / 60.0;
+        // Treble and quiet bass don't move it.
+        s.update(Some((&sine(2000.0, 0.5, rate), rate)), dt);
+        assert!(s.bass() < 0.01, "{}", s.bass());
+        s.update(Some((&sine(60.0, 0.03, rate), rate)), dt);
+        assert!(s.bass() < 0.01, "{}", s.bass());
+        // A loud bass note: up in one frame, and it stays up while it lasts.
+        let bass = sine(60.0, 0.8, rate);
+        s.update(Some((&bass, rate)), dt);
+        let high = s.bass();
+        assert!(high > 0.5, "{high}");
+        for _ in 0..180 {
+            s.update(Some((&bass, rate)), dt);
+        }
+        assert!((s.bass() - high).abs() < 0.01, "{} after 3 s, {high} at first", s.bass());
+        // Gone: most of the way down within a quarter of a second.
+        for _ in 0..15 {
+            s.update(None, dt);
+        }
+        assert!(s.bass() < 0.2 * high, "{}", s.bass());
+    }
+
+    #[test]
+    fn circle_shows_bass_notes_apart() {
+        let mut s = Spectrum::new(40, Tuning::CIRCLE);
+        let rate = 44_100;
+        // An 808 at 45 Hz with its octave: two lobes with a gap between them.
+        let (a, b) = (sine(45.0, 0.5, rate), sine(90.0, 0.5, rate));
+        let samples: Vec<f32> = a.iter().zip(&b).map(|(x, y)| x + y).collect();
+        for _ in 0..10 {
+            s.update(Some((&samples, rate)), 1.0 / 60.0);
+        }
+        let band = |hz: f32| ((hz - 20.0) / 110.0 * 40.0) as usize;
+        let (low, mid, high) = (s.bands()[band(45.0)], s.bands()[band(67.0)], s.bands()[band(90.0)]);
+        assert!(low > 0.6 && high > 0.6, "{low} {high}");
+        assert!(mid < 0.5 * low.min(high), "{mid} between {low} and {high}");
+        // Nothing above the range.
+        let above = sine(400.0, 0.5, rate);
+        for _ in 0..60 {
+            s.update(Some((&above, rate)), 1.0 / 60.0);
+        }
+        assert!(s.bands().iter().all(|&v| v < 0.05), "{:?}", s.bands());
     }
 }
