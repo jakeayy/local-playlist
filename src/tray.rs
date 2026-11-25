@@ -131,7 +131,7 @@ fn rounded_square(x: f32, y: f32, side: f32, r: f32) -> f32 {
 }
 
 /// Distance from (x, y) to the segment a–b.
-fn segment(x: f32, y: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
+pub(crate) fn segment(x: f32, y: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let t = (((x - a.0) * dx + (y - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
     (x - a.0 - t * dx).hypot(y - a.1 - t * dy)

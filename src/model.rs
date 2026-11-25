@@ -135,6 +135,8 @@ pub struct Settings {
     pub sponsorblock_categories: Vec<String>,
     /// Desktop: closing the window keeps the app playing, with a tray icon.
     pub background: bool,
+    /// Desktop: show what's playing on the Discord profile.
+    pub discord: DiscordSettings,
 }
 
 impl Default for Settings {
@@ -152,8 +154,40 @@ impl Default for Settings {
             sponsorblock: true,
             sponsorblock_categories: crate::sponsorblock::default_categories(),
             background: true,
+            discord: Default::default(),
         }
     }
+}
+
+/// Discord Rich Presence (desktop; see `discord.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscordSettings {
+    /// Off by default: Discord then sees every song played.
+    pub enabled: bool,
+    /// A "Listen to song" button, linking to the song's page.
+    pub song_button: bool,
+    /// A "GitHub" button, linking to this project.
+    pub github_button: bool,
+    /// What "Listening to …" names.
+    pub status: DiscordStatus,
+}
+
+impl Default for DiscordSettings {
+    fn default() -> Self {
+        Self { enabled: false, song_button: true, github_button: true, status: DiscordStatus::App }
+    }
+}
+
+/// What the Discord status ("Listening to …") names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiscordStatus {
+    /// "Listening to Local Playlist"
+    #[default]
+    App,
+    /// "Listening to <artist>"
+    Artist,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

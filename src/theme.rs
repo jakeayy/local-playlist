@@ -40,7 +40,20 @@ const SEED_HUE: f32 = 0.72;
 /// greys) are left alone.
 const SEED_RANGE: f32 = 0.09;
 /// Typical saturation of a cover's dominant colour, mapped to the theme's own.
-const REFERENCE_SATURATION: f32 = 0.55;
+pub const REFERENCE_SATURATION: f32 = 0.55;
+
+/// An accent-palette colour turned to an accent's hue (hue, saturation from a
+/// cover), as the cover-tinted themes show it.
+pub fn tint((r, g, b): (u8, u8, u8), accent: (f32, f32)) -> (u8, u8, u8) {
+    let (_, s, l) = crate::cover::rgb_to_hsl(r, g, b);
+    tinted(s, l, accent)
+}
+
+/// Saturation `s` scaled by how vivid the cover is, lightness `l` kept (so
+/// contrast stays as the theme designed it), at the accent's hue.
+fn tinted(s: f32, l: f32, (hue, sat): (f32, f32)) -> (u8, u8, u8) {
+    crate::cover::hsl_to_rgb(hue, (s * (sat / REFERENCE_SATURATION).clamp(0.45, 1.3)).min(1.0), l)
+}
 
 /// Recolour the light/dark themes around an accent (hue, saturation from a
 /// cover; `None` = the stock purple), `t` (0..1) of the way from `from` to
@@ -69,9 +82,9 @@ pub fn set_accent(from: Option<(f32, f32)>, to: Option<(f32, f32)>, t: f32, choi
 /// result is blended in RGB `t` of the way from the `from` to the `to` accent
 /// (so a fade doesn't sweep through the hues in between).
 fn recolor(json: &str, from: Option<(f32, f32)>, to: Option<(f32, f32)>, t: f32) -> String {
-    use crate::cover::{hsl_to_rgb, rgb_to_hsl};
+    use crate::cover::rgb_to_hsl;
     let tint = |accent: Option<(f32, f32)>, (_, s, l): (f32, f32, f32), orig: (u8, u8, u8)| match accent {
-        Some((hue, sat)) => hsl_to_rgb(hue, (s * (sat / REFERENCE_SATURATION).clamp(0.45, 1.3)).min(1.0), l),
+        Some(accent) => tinted(s, l, accent),
         None => orig,
     };
     let t = t.clamp(0.0, 1.0);

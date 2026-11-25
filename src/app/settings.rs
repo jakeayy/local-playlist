@@ -620,7 +620,7 @@ impl LocalPlaylist {
                             ),
                     )
                     .child(self.render_sponsorblock(cx))
-                    .when(!crate::WEB, |d| d.child(self.render_background(cx)))
+                    .when(!crate::WEB, |d| d.child(self.render_background(cx)).child(self.render_discord(cx)))
                     .when(crate::WEB, |d| {
                         d.child(
                             v_flex()
@@ -767,6 +767,123 @@ impl LocalPlaylist {
                     this.update_tray();
                     cx.notify();
                 })))
+                .into_any_element()
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            let _ = cx;
+            div().into_any_element()
+        }
+    }
+
+    /// Desktop: Discord Rich Presence.
+    fn render_discord(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(feature = "desktop")]
+        {
+            use crate::discord::Connection;
+            use crate::model::{DiscordSettings, DiscordStatus};
+            use gpui_kit::component::checkbox::Checkbox;
+            use gpui_kit::component::switch::Switch;
+            let theme = cx.theme().clone();
+            let discord = self.library.settings.discord;
+            let connection = self.presence.as_ref().map(|p| p.connection());
+            // Changed settings reach Discord on the next tick.
+            let set = |f: fn(&mut DiscordSettings, bool)| {
+                cx.listener(move |this: &mut Self, on: &bool, _, cx| {
+                    f(&mut this.library.settings.discord, *on);
+                    this.save();
+                    this.update_presence();
+                    cx.notify();
+                })
+            };
+            let artist = self
+                .now
+                .as_ref()
+                .map(|n| n.track.artist.trim())
+                .filter(|a| !a.is_empty())
+                .unwrap_or("the artist")
+                .to_string();
+            let status_example = match discord.status {
+                DiscordStatus::App => "Listening to Local Playlist".to_string(),
+                DiscordStatus::Artist => format!("Listening to {artist}"),
+            };
+            let option = |id: &'static str, label: &'static str, desc: &'static str, checked: bool, on_click| {
+                h_flex()
+                    .gap_3()
+                    .child(Checkbox::new(id).label(label).checked(checked).on_click(on_click))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(desc))
+            };
+            v_flex()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .justify_between()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().text_lg().font_semibold().child("Discord"))
+                                .child(div().text_sm().text_color(theme.muted_foreground).child(
+                                    "Show what you're playing on your Discord profile, with the cover and how far along it is. Goes through the Discord app on this computer; Discord then sees each song you play and its link.",
+                                ))
+                                .when(connection == Some(Connection::NotFound), |d| {
+                                    d.child(div().text_sm().text_color(theme.warning).child(
+                                        "Discord isn't running, or wasn't found. Your status shows once it starts.",
+                                    ))
+                                }),
+                        )
+                        .child(
+                            Switch::new("discord")
+                                .checked(discord.enabled)
+                                .on_click(set(|d, on| d.enabled = on)),
+                        ),
+                )
+                .when(discord.enabled, |d| {
+                    d.child(
+                        v_flex()
+                            .gap_3()
+                            .p_4()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(theme.border)
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .child(div().text_sm().font_medium().child("Status shows"))
+                                    .child(h_flex().gap_1().children(
+                                        [(DiscordStatus::App, "App name"), (DiscordStatus::Artist, "Artist name")].map(
+                                            |(choice, label)| {
+                                                Button::new(label)
+                                                    .small()
+                                                    .label(label)
+                                                    .when(discord.status == choice, |b| b.primary())
+                                                    .when(discord.status != choice, |b| b.ghost())
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.library.settings.discord.status = choice;
+                                                        this.save();
+                                                        cx.notify();
+                                                    }))
+                                            },
+                                        ),
+                                    ))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child(status_example)),
+                            )
+                            .child(option(
+                                "discord-song",
+                                "\u{201c}Listen to song\u{201d} button",
+                                "Opens the song on YouTube or SoundCloud.",
+                                discord.song_button,
+                                set(|d, on| d.song_button = on),
+                            ))
+                            .child(option(
+                                "discord-github",
+                                "\u{201c}GitHub\u{201d} button",
+                                "Opens Local Playlist on GitHub.",
+                                discord.github_button,
+                                set(|d, on| d.github_button = on),
+                            )),
+                    )
+                })
                 .into_any_element()
         }
         #[cfg(not(feature = "desktop"))]
