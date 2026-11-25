@@ -14,17 +14,17 @@
   const SC = 'soundcloud';
   const BASE_HUE = 262;
 
-  // SponsorBlock categories as the app lists them in Settings (key, name, description, on by default).
-  const SB_CATS = [
-    ['music_offtopic', 'Non-music', 'Talking, skits and other non-music parts of music videos', true],
-    ['sponsor', 'Sponsor', 'Paid promotion and sponsored segments', true],
-    ['selfpromo', 'Self-promotion', 'Unpaid promotion: merch, donations, shout-outs', true],
-    ['interaction', 'Interaction reminder', '"Like and subscribe" and similar reminders', true],
-    ['intro', 'Intro', 'Intro animations and pauses without content', false],
-    ['outro', 'Outro', 'Credits and end cards', false],
-    ['preview', 'Preview / recap', "Previews of what's coming up, recaps", false],
-    ['filler', 'Filler', 'Tangents and jokes not needed for the main content', false],
-  ];
+  // SponsorBlock categories (the app skips them all), named in the "Skipped …" message.
+  const SB_NAMES = {
+    music_offtopic: 'Non-music',
+    sponsor: 'Sponsor',
+    selfpromo: 'Self-promotion',
+    interaction: 'Interaction reminder',
+    intro: 'Intro',
+    outro: 'Outro',
+    preview: 'Preview / recap',
+    filler: 'Filler',
+  };
 
   // --- Placeholder library -------------------------------------------------------------------------
   let uid = 0;
@@ -80,7 +80,8 @@
     query: '',
     coverColours: true,
     dtheme: 'system',
-    sb: Object.fromEntries(SB_CATS.map((c) => [c[0], c[3]])),
+    sponsorblock: true,
+    importOpen: false,  // the sidebar's "Import playlist" section
     downloads: [],       // tracks waiting or downloading
     busy: false,         // a link is being "looked up"
     closed: false,       // the window is closed and the desktop shows (easter egg)
@@ -201,7 +202,7 @@
     seek.disabled = !t;
     seek.max = t ? t.dur : 100;
     $('d-dur').textContent = fmt(t ? t.dur : 0);
-    $('d-segs').innerHTML = t ? t.segs.filter((s) => S.sb[s[2]]).map((s) =>
+    $('d-segs').innerHTML = t && S.sponsorblock ? t.segs.map((s) =>
       '<span style="left:' + (s[0] / t.dur) * 100 + '%;width:' + ((s[1] - s[0]) / t.dur) * 100 + '%"></span>').join('') : '';
     $('d-viz-title').textContent = t ? t.title : 'Nothing playing';
     $('d-viz-artist').textContent = t ? t.artist : 'Pick a track to see it move';
@@ -229,7 +230,7 @@
   function renderSettings() {
     demo.querySelectorAll('[data-act="dtheme"]').forEach((b) => b.setAttribute('aria-checked', b.dataset.val === S.dtheme));
     demo.querySelector('[data-act="cover-colours"]').setAttribute('aria-checked', S.coverColours);
-    $('d-sb').querySelectorAll('input').forEach((c) => { c.checked = !!S.sb[c.value]; });
+    $('d-sb').setAttribute('aria-checked', S.sponsorblock);
   }
 
   function renderAll() {
@@ -327,14 +328,14 @@
     play(pl, i);
   }
 
-  // Jump past an enabled SponsorBlock segment that the position is in.
+  // Jump past the SponsorBlock segment that the position is in.
   function checkSegments() {
     const t = S.current;
-    if (!t) return;
+    if (!t || !S.sponsorblock) return;
     for (const [s, e, cat] of t.segs) {
-      if (S.sb[cat] && S.pos >= s && S.pos < e - 0.25) {
+      if (S.pos >= s && S.pos < e - 0.25) {
         S.pos = e;
-        const name = SB_CATS.find((c) => c[0] === cat)[1];
+        const name = SB_NAMES[cat];
         toast('Skipped ' + name.toLowerCase() + ' (' + fmt(s) + '–' + fmt(e) + ') with SponsorBlock');
         done('skip');
         renderProgress();
@@ -617,6 +618,17 @@
         renderSettings();
         done('theme');
         break;
+      case 'sponsorblock':
+        S.sponsorblock = !S.sponsorblock;
+        renderSettings();
+        renderPlayer();
+        break;
+      case 'import-toggle':
+        S.importOpen = !S.importOpen;
+        el.setAttribute('aria-expanded', S.importOpen);
+        $('d-import-body').hidden = !S.importOpen;
+        if (S.importOpen) $('d-import-input').focus();
+        break;
       case 'cover-colours':
         S.coverColours = !S.coverColours;
         renderSettings();
@@ -648,16 +660,7 @@
   seek.addEventListener('input', () => { if (!S.current) return; S.pos = +seek.value; renderProgress(); });
   seek.addEventListener('change', () => { checkSegments(); seek.blur(); });
   $('d-volume').addEventListener('input', (e) => { S.volume = e.target.value / 100; S.muted = false; renderVolume(); renderPlayer(); });
-  $('d-sb').addEventListener('change', (e) => {
-    if (e.target.type !== 'checkbox') return;
-    S.sb[e.target.value] = e.target.checked;
-    renderPlayer();
-  });
   for (const b of demo.querySelectorAll('[data-act="import"], #d-add-btn')) b.dataset.icon = b.querySelector('use').getAttribute('href');
-
-  // SponsorBlock checkboxes.
-  $('d-sb').insertAdjacentHTML('beforeend', SB_CATS.map((c) =>
-    '<label class="d-check"><input type="checkbox" value="' + c[0] + '"' + (c[3] ? ' checked' : '') + '><span>' + esc(c[1]) + '</span><small>' + esc(c[2]) + '</small></label>').join(''));
 
   // --- "Things to try": point at the right part of the demo -----------------------------------------------
   const SAMPLES = [
@@ -697,13 +700,13 @@
         point($('d-tracks').querySelector('.d-row-main'));
         break;
       case 'skip': {
-        // Play a YouTube track whose start is an enabled segment, so the skip happens right away.
+        // Play a YouTube track that starts with a segment, so the skip happens right away.
+        if (!S.sponsorblock) { S.sponsorblock = true; renderSettings(); }
         let found = null;
         playlists.some((p) => p.tracks.some((t, i) => {
-          if (t.segs.some((s) => s[0] === 0 && S.sb[s[2]])) { found = [p, i]; return true; }
+          if (t.segs.some((s) => s[0] === 0)) { found = [p, i]; return true; }
           return false;
         }));
-        if (!found) { S.sb.music_offtopic = true; renderSettings(); }
         if (found) {
           S.sel = playlists.indexOf(found[0]);
           setView('list');

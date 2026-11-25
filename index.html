@@ -155,7 +155,7 @@
       "name": "What does SponsorBlock do, and can I turn it off?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "SponsorBlock is a community database of segments in YouTube videos, such as sponsors, talking in music videos and \"like and subscribe\" reminders. Local Playlist jumps past the categories you pick; the saved files aren't cut. To keep what you play private, it only sends the first 4 characters of a hash of the video's id. You can change the categories or turn it off in Settings."
+        "text": "SponsorBlock is a community database of segments in YouTube videos, such as sponsors, talking in music videos and \"like and subscribe\" reminders. Local Playlist jumps past all of them, intros, outros and filler included; the saved files aren't cut. To keep what you play private, it only sends the first 4 characters of a hash of the video's id. You can turn it off in Settings."
       }
     },
     {
@@ -227,6 +227,7 @@
 <symbol id="i-book-open" viewBox="0 0 24 24"><path d="M12 5v16"/><path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"/></symbol>
 <symbol id="i-chart-column" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol>
 <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
 <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 9-5.5 5.5L8 12"/></symbol>
 <symbol id="i-circle-question-mark" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
 <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
@@ -353,15 +354,18 @@
               </div>
               <nav class="d-lists" id="d-lists" aria-label="Your playlists"></nav>
               <div class="d-import">
-                <label class="d-label" for="d-import-input">Import playlist</label>
-                <input class="d-input" id="d-import-input" type="url" placeholder="Playlist, set or likes URL" autocomplete="off" spellcheck="false">
-                <button class="d-btn" type="button" data-act="import">
-                  <svg class="i" aria-hidden="true"><use href="#i-import"></use></svg> Import as new playlist
+                <button class="d-import-toggle d-label" type="button" data-act="import-toggle" id="d-import-toggle" aria-expanded="false" aria-controls="d-import-body">
+                  Import playlist <svg class="i" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
                 </button>
-                <p class="d-hint">YouTube playlists, SoundCloud sets, profiles and /likes. Private lists need a login (Settings).</p>
+                <div class="d-import-body" id="d-import-body" hidden>
+                  <input class="d-input" id="d-import-input" type="url" placeholder="Playlist, set or likes URL" aria-label="Playlist link to import" autocomplete="off" spellcheck="false">
+                  <button class="d-btn" type="button" data-act="import">
+                    <svg class="i" aria-hidden="true"><use href="#i-import"></use></svg> Import as new playlist
+                  </button>
+                  <p class="d-hint">YouTube playlists, SoundCloud sets, profiles and /likes. Private lists need a login (Settings).</p>
+                </div>
               </div>
               <div class="d-foot">
-                <span class="d-version">yt-dlp · demo build</span>
                 <button class="d-btn" type="button" data-act="settings" id="d-settings-btn">
                   <svg class="i" aria-hidden="true"><use href="#i-settings"></use></svg> Settings &amp; accounts
                 </button>
@@ -438,6 +442,13 @@
                     </button>
                   </div>
 
+                  <h4>Accounts</h4>
+                  <p class="d-sub">Optional, for private playlists and likes. In the app, logging in opens a small login window; your session stays on your computer, encrypted.</p>
+                  <div class="d-accounts">
+                    <div class="d-account"><span class="d-badge yt">YouTube</span><span class="d-sub">Not logged in</span><button class="d-btn" type="button" data-act="login"><svg class="i" aria-hidden="true"><use href="#i-log-in"></use></svg> Log in</button></div>
+                    <div class="d-account"><span class="d-badge sc">SoundCloud</span><span class="d-sub">Not logged in</span><button class="d-btn" type="button" data-act="login"><svg class="i" aria-hidden="true"><use href="#i-log-in"></use></svg> Log in</button></div>
+                  </div>
+
                   <h4>Appearance</h4>
                   <p class="d-sub">Material-style light and dark themes. (In this demo they change only the preview.)</p>
                   <div class="d-seg" role="radiogroup" aria-label="Theme" id="d-theme-seg">
@@ -453,17 +464,12 @@
                     <button class="d-switch" type="button" role="switch" aria-checked="true" aria-labelledby="d-cover-label" data-act="cover-colours"><span></span></button>
                   </div>
 
-                  <h4>SponsorBlock</h4>
-                  <p class="d-sub">Skip parts of YouTube tracks marked by the SponsorBlock community. Files aren't cut; playback jumps past the segments.</p>
-                  <fieldset class="d-checks" id="d-sb">
-                    <legend class="visually-hidden">Segments to skip</legend>
-                  </fieldset>
-
-                  <h4>Accounts</h4>
-                  <p class="d-sub">Optional, for private playlists and likes. In the app, logging in opens a small login window; your session stays on your computer, encrypted.</p>
-                  <div class="d-accounts">
-                    <div class="d-account"><span class="d-badge yt">YouTube</span><span class="d-sub">Not logged in</span><button class="d-btn" type="button" data-act="login"><svg class="i" aria-hidden="true"><use href="#i-log-in"></use></svg> Log in</button></div>
-                    <div class="d-account"><span class="d-badge sc">SoundCloud</span><span class="d-sub">Not logged in</span><button class="d-btn" type="button" data-act="login"><svg class="i" aria-hidden="true"><use href="#i-log-in"></use></svg> Log in</button></div>
+                  <div class="d-setting d-setting-section">
+                    <div>
+                      <h4 id="d-sb-label">SponsorBlock</h4>
+                      <p class="d-sub">Skip parts of YouTube tracks marked by the SponsorBlock community: sponsors, self-promotion, "like and subscribe" reminders, intros, outros, recaps, filler and non-music parts. Files aren't cut; playback jumps past the segments.</p>
+                    </div>
+                    <button class="d-switch" type="button" role="switch" aria-checked="true" aria-labelledby="d-sb-label" data-act="sponsorblock" id="d-sb"><span></span></button>
                   </div>
 
                   <h4>Storage</h4>
@@ -566,7 +572,7 @@
         <li class="feature">
           <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-skip-forward"></use></svg></span>
           <h3>Skips the boring parts</h3>
-          <p>With <a href="https://sponsor.ajay.app/">SponsorBlock</a>, talking, sponsors and "like and subscribe" reminders in YouTube videos are skipped. You choose what to skip, or turn it off.</p>
+          <p>With <a href="https://sponsor.ajay.app/">SponsorBlock</a>, talking, sponsors, "like and subscribe" reminders, intros, outros and filler in YouTube videos are skipped. Or turn it off.</p>
         </li>
         <li class="feature">
           <span class="f-icon"><svg class="i" aria-hidden="true"><use href="#i-audio-lines"></use></svg></span>
@@ -764,7 +770,7 @@
         </details>
         <details id="faq-what-does-sponsorblock-do-and-can-i-turn-it-off">
           <summary>What does SponsorBlock do, and can I turn it off?</summary>
-          <div class="answer"><p>SponsorBlock is a community database of segments in YouTube videos, such as sponsors, talking in music videos and "like and subscribe" reminders. Local Playlist jumps past the categories you pick; the saved files aren't cut. To keep what you play private, it only sends the first 4 characters of a hash of the video's id. You can change the categories or turn it off in Settings.</p></div>
+          <div class="answer"><p>SponsorBlock is a community database of segments in YouTube videos, such as sponsors, talking in music videos and "like and subscribe" reminders. Local Playlist jumps past all of them, intros, outros and filler included; the saved files aren't cut. To keep what you play private, it only sends the first 4 characters of a hash of the video's id. You can turn it off in Settings.</p></div>
         </details>
         <details id="faq-what-are-yt-dlp-and-quickjs-and-why-does-the">
           <summary>What are yt-dlp and QuickJS, and why does the app download them?</summary>
