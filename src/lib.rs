@@ -79,6 +79,8 @@ gpui_kit::assets::icon_assets!(
         ArrowUp,
         AudioLines,
         ChartColumn,
+        ChevronDown,
+        ChevronRight,
         Monitor,
         Moon,
         Sun,

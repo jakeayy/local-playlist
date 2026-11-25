@@ -65,7 +65,8 @@ them in the app, also offline. No account, no ads, no tracking.
   in your Music folder, so it also plays without internet and in any other player.
   "Download all" saves a whole playlist at once.
 - **Skips the boring parts** of YouTube videos with [SponsorBlock](https://sponsor.ajay.app/):
-  talking, sponsors, "like and subscribe" reminders. You choose what to skip, or turn it off.
+  talking, sponsors, "like and subscribe" reminders, intros, outros and filler. Or turn it
+  off.
 - **Lyrics, karaoke style:** the line being sung lights up word by word and stays in the
   middle; click a line to jump to it. Songs without timed lyrics show the plain text.
   Uploads like "Artist - Title (Official Video)" are matched to the right song, and if a
@@ -73,8 +74,7 @@ them in the app, also offline. No account, no ads, no tracking.
   right-click the line being sung).
 - **Visualizer:** bars, or a circle over a night sky that moves with the music.
 - **Keeps playing in the background:** close the window and the music goes on, with an
-  icon in the system tray to bring it back, pause, skip or quit (desktop app; turn it off
-  in Settings).
+  icon in the system tray to bring it back, pause, skip or quit (desktop app).
 - **Discord status** (optional, desktop app): show what you're playing on your Discord
   profile, with the cover, how far along it is, and buttons to the song and the project.
 - **Light and dark themes**, with colours taken from the cover of what's playing.
@@ -105,7 +105,8 @@ Pre-releases are builds of the newest changes. They may be less stable.
 
 1. **Start the app.** The first time, it offers to download yt-dlp and QuickJS; say yes.
 2. **Make a playlist** with **+** at the top of the sidebar, or bring one in: paste a
-   playlist link under **Import playlist** and click **Import as new playlist**.
+   playlist link under **Import playlist** (at the bottom of the sidebar) and click
+   **Import as new playlist**.
 3. **Add songs** by pasting a YouTube or SoundCloud link into the box above the track list
    and clicking **Add**.
 4. **Click a track to play it.** It's saved to your Music folder as it plays (Settings →
@@ -140,7 +141,8 @@ in doesn't work for you, you can paste cookies from your browser instead; see
 - **Discord sees what you play only if you turn on the Discord status.** It's off by
   default. When on, the app tells the Discord app on your computer each song's title,
   artist and link, and Discord shows them on your profile (and loads the cover from
-  YouTube or SoundCloud, and the play/pause icon from this project on GitHub, itself).
+  YouTube or SoundCloud, unless you hide it, and the play/pause icon from this project on
+  GitHub, itself).
 - **SponsorBlock isn't told which video you're playing:** the app asks about a group of
   many videos at once and picks out the right one itself.
 - **Lyrics are looked up only when you open the lyrics page,** for the song playing then.
@@ -174,9 +176,10 @@ in doesn't work for you, you can paste cookies from your browser instead; see
 - The Discord status (off by default) goes to the Discord app over its local connection
   (a socket or named pipe on this computer), never to Discord's servers directly. Discord
   receives the title, artist, length and link of the song playing, and the address of its
-  cover image; for SoundCloud tracks the app asks SoundCloud for that address. With colours
-  from cover art on, the play/pause icon is one in the app's accent colour, which Discord
-  loads from this repository (`raw.githubusercontent.com`).
+  cover image (unless the cover is hidden); for SoundCloud tracks the app asks SoundCloud
+  for that address. With colours from cover art on, the play/pause icon is one in the
+  app's accent colour, which Discord loads from this repository
+  (`raw.githubusercontent.com`).
 - Lyrics are cached in `~/.cache/local-playlist/lyrics/` (on Linux), one small file per
   song.
 - The tray icon uses the desktop's StatusNotifierItem tray on Linux (KDE, most other

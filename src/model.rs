@@ -129,12 +129,8 @@ pub struct Settings {
     pub appearance: Appearance,
     /// Tint the theme with the playing track's cover colour.
     pub cover_colors: bool,
-    /// Skip SponsorBlock segments in YouTube tracks.
+    /// Skip SponsorBlock segments (every category) in YouTube tracks.
     pub sponsorblock: bool,
-    /// SponsorBlock categories to skip (see `sponsorblock::CATEGORIES`).
-    pub sponsorblock_categories: Vec<String>,
-    /// Desktop: closing the window keeps the app playing, with a tray icon.
-    pub background: bool,
     /// Desktop: show what's playing on the Discord profile.
     pub discord: DiscordSettings,
 }
@@ -152,8 +148,6 @@ impl Default for Settings {
             appearance: Default::default(),
             cover_colors: true,
             sponsorblock: true,
-            sponsorblock_categories: crate::sponsorblock::default_categories(),
-            background: true,
             discord: Default::default(),
         }
     }
@@ -171,11 +165,14 @@ pub struct DiscordSettings {
     pub github_button: bool,
     /// What "Listening to …" names.
     pub status: DiscordStatus,
+    /// The app's icon instead of the song's cover (also spares the
+    /// SoundCloud lookup of the cover's address).
+    pub hide_cover: bool,
 }
 
 impl Default for DiscordSettings {
     fn default() -> Self {
-        Self { enabled: false, song_button: true, github_button: true, status: DiscordStatus::App }
+        Self { enabled: false, song_button: true, github_button: true, status: DiscordStatus::App, hide_cover: false }
     }
 }
 

@@ -39,7 +39,7 @@ impl LocalPlaylist {
                     .get(&now.track.source_id)
                     .filter(|_| now.track.platform == Platform::YouTube)
                     .map(|(_, segs)| {
-                        crate::sponsorblock::skipped_ranges(segs, &self.library.settings.sponsorblock_categories)
+                        crate::sponsorblock::skipped_ranges(segs)
                             .into_iter()
                             .filter(|&(start, _)| start < total)
                             .map(|(start, end)| ((start / total) as f32, ((end.min(total) - start) / total) as f32))

@@ -140,6 +140,8 @@ pub struct LocalPlaylist {
 
     adding: bool,
     importing: bool,
+    /// The sidebar's "Import playlist" section is expanded.
+    import_open: bool,
     view: View,
     components: Option<Status>,
     /// Status text and progress of a running component install.
@@ -408,6 +410,8 @@ impl LocalPlaylist {
             last_shown: (false, false),
             adding: false,
             importing: false,
+            // Open to start with only while there's nothing to play yet.
+            import_open: selected.is_none(),
             view: View::Playlist,
             components: None,
             installing: None,
@@ -456,7 +460,7 @@ impl LocalPlaylist {
         this.refresh_components(cx);
         #[cfg(feature = "desktop")]
         {
-            this.update_tray();
+            this.start_tray();
             this.update_presence();
         }
         #[cfg(target_family = "wasm")]
@@ -585,23 +589,19 @@ impl LocalPlaylist {
 
     // ----------------------------------------------------------------- tray
 
-    /// Show the tray icon while playing in the background is on.
+    /// Show the tray icon, so closing the window keeps the app playing.
     #[cfg(feature = "desktop")]
-    fn update_tray(&mut self) {
-        if !self.library.settings.background {
-            self.tray = None;
-        } else if self.tray.is_none() {
-            self.tray = crate::tray::Tray::start(self.tray_commands.clone());
-            self.tray_shown = self.tray.is_some();
-            self.tray_status = Default::default();
-        }
+    fn start_tray(&mut self) {
+        self.tray = crate::tray::Tray::start(self.tray_commands.clone());
+        self.tray_shown = self.tray.is_some();
     }
 
     /// Whether closing the window leaves the app running: only while the
-    /// tray can bring the window back.
+    /// tray can bring the window back (without one, e.g. on GNOME without
+    /// the AppIndicator extension, closing quits).
     #[cfg(feature = "desktop")]
     fn runs_in_background(&self) -> bool {
-        self.library.settings.background && self.tray.is_some() && self.tray_shown
+        self.tray.is_some() && self.tray_shown
     }
 
     /// Keep the tray's menu and tooltip up to date.
@@ -1227,7 +1227,7 @@ impl LocalPlaylist {
             return;
         };
         let pos = audio.position().as_secs_f64();
-        let Some(target) = crate::sponsorblock::skip_target(segs, &settings.sponsorblock_categories, pos) else {
+        let Some(target) = crate::sponsorblock::skip_target(segs, pos) else {
             return;
         };
         let t = crate::now_ms();
@@ -1872,6 +1872,7 @@ impl LocalPlaylist {
 
         let components_label = self.components_label();
         let setup_needed = self.setup_needed();
+        let import_open = self.import_open;
         let settings_open = self.view == View::Settings;
 
         v_flex()
@@ -1937,22 +1938,39 @@ impl LocalPlaylist {
                     .gap_2()
                     .border_t_1()
                     .border_color(theme.sidebar_border)
-                    .child(div().text_xs().font_semibold().text_color(theme.muted_foreground).child("IMPORT PLAYLIST"))
-                    .child(Input::new(&self.import_input).small().cleanable(true))
                     .child(
-                        Button::new("import")
-                            .small()
-                            .icon(IconName::Import)
-                            .label(if self.importing { "Importing…" } else { "Import as new playlist" })
-                            .loading(self.importing)
-                            .on_click(cx.listener(|this, _, window, cx| this.import_from_input(window, cx))),
-                    )
-                    .child(
-                        div()
+                        h_flex()
+                            .id("import-toggle")
+                            .justify_between()
+                            .cursor_pointer()
                             .text_xs()
+                            .font_semibold()
                             .text_color(theme.muted_foreground)
-                            .child("YouTube playlists, SoundCloud sets, profiles and /likes. Private lists need a login (Settings)."),
-                    ),
+                            .hover(|d| d.text_color(theme.sidebar_foreground))
+                            .child("IMPORT PLAYLIST")
+                            .child(
+                                Icon::new(if import_open { IconName::ChevronDown } else { IconName::ChevronRight })
+                                    .xsmall(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.import_open = !this.import_open;
+                                cx.notify();
+                            })),
+                    )
+                    .when(import_open, |d| {
+                        d.child(Input::new(&self.import_input).small().cleanable(true))
+                            .child(
+                                Button::new("import")
+                                    .small()
+                                    .icon(IconName::Import)
+                                    .label(if self.importing { "Importing…" } else { "Import as new playlist" })
+                                    .loading(self.importing)
+                                    .on_click(cx.listener(|this, _, window, cx| this.import_from_input(window, cx))),
+                            )
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                "YouTube playlists, SoundCloud sets, profiles and /likes. Private lists need a login (Settings).",
+                            ))
+                    }),
             )
             .child(
                 v_flex()
@@ -1960,14 +1978,16 @@ impl LocalPlaylist {
                     .gap_2()
                     .border_t_1()
                     .border_color(theme.sidebar_border)
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .text_xs()
-                            .text_color(if setup_needed { theme.warning } else { theme.muted_foreground })
-                            .when(setup_needed, |d| d.child(Icon::new(IconName::CircleAlert).xsmall()))
-                            .child(div().truncate().child(components_label)),
-                    )
+                    .when_some(components_label, |d, label| {
+                        d.child(
+                            h_flex()
+                                .gap_1()
+                                .text_xs()
+                                .text_color(if setup_needed { theme.warning } else { theme.muted_foreground })
+                                .when(setup_needed, |d| d.child(Icon::new(IconName::CircleAlert).xsmall()))
+                                .child(div().truncate().child(label)),
+                        )
+                    })
                     .child(
                         Button::new("open-settings")
                             .small()
