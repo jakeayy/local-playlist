@@ -601,6 +601,8 @@ impl LocalPlaylist {
                                     .justify_between()
                                     .child(
                                         v_flex()
+                                            .flex_1()
+                                            .min_w_0()
                                             .gap_1()
                                             .child(div().text_sm().font_medium().child("Colours from cover art"))
                                             .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
@@ -700,6 +702,8 @@ impl LocalPlaylist {
                     .justify_between()
                     .child(
                         v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_1()
                             .child(div().text_lg().font_semibold().child("SponsorBlock"))
                             .child(div().text_sm().text_color(theme.muted_foreground).child(
@@ -730,7 +734,7 @@ impl LocalPlaylist {
                                         cx.notify();
                                     },
                                 )))
-                                .child(div().text_sm().text_color(theme.muted_foreground).child(desc))
+                                .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(desc))
                         }),
                     ),
                 )
@@ -750,6 +754,8 @@ impl LocalPlaylist {
                 .justify_between()
                 .child(
                     v_flex()
+                        .flex_1()
+                        .min_w_0()
                         .gap_1()
                         .child(div().text_lg().font_semibold().child("Play in the background"))
                         .child(div().text_sm().text_color(theme.muted_foreground).child(
@@ -811,7 +817,7 @@ impl LocalPlaylist {
                 h_flex()
                     .gap_3()
                     .child(Checkbox::new(id).label(label).checked(checked).on_click(on_click))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(desc))
+                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(desc))
             };
             v_flex()
                 .gap_3()
@@ -821,6 +827,8 @@ impl LocalPlaylist {
                         .justify_between()
                         .child(
                             v_flex()
+                                .flex_1()
+                                .min_w_0()
                                 .gap_1()
                                 .child(div().text_lg().font_semibold().child("Discord"))
                                 .child(div().text_sm().text_color(theme.muted_foreground).child(
@@ -866,7 +874,7 @@ impl LocalPlaylist {
                                             },
                                         ),
                                     ))
-                                    .child(div().text_sm().text_color(theme.muted_foreground).child(status_example)),
+                                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(status_example)),
                             )
                             .child(option(
                                 "discord-song",
