@@ -81,8 +81,9 @@ impl Shared {
 
 // --------------------------------------------------------------------- tap
 
-/// Mono samples kept for visualization (~93 ms at 44.1 kHz).
-pub const TAP_LEN: usize = 4096;
+/// Mono samples kept for visualization (~186 ms at 44.1 kHz): the longest FFT
+/// the visualizer runs.
+pub const TAP_LEN: usize = crate::spectrum::MAX_FFT_LEN;
 
 /// The most recent audio sent to the output device (mono, before volume), for
 /// visualizations. Written lock-free by the audio thread.

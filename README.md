@@ -75,6 +75,8 @@ them in the app, also offline. No account, no ads, no tracking.
 - **Keeps playing in the background:** close the window and the music goes on, with an
   icon in the system tray to bring it back, pause, skip or quit (desktop app; turn it off
   in Settings).
+- **Discord status** (optional, desktop app): show what you're playing on your Discord
+  profile, with the cover, how far along it is, and buttons to the song and the project.
 - **Light and dark themes**, with colours taken from the cover of what's playing.
 - **Removed by mistake?** Removed tracks are kept for a while (up to 2 GB), so adding one
   back is instant.
@@ -135,6 +137,10 @@ in doesn't work for you, you can paste cookies from your browser instead; see
 - **The app only talks to** YouTube and SoundCloud (to look up and download tracks),
   SponsorBlock (if turned on), the lyrics databases LRCLIB and lrc.red (only while the
   lyrics page is open), and GitHub (to download yt-dlp and QuickJS).
+- **Discord sees what you play only if you turn on the Discord status.** It's off by
+  default. When on, the app tells the Discord app on your computer each song's title,
+  artist and link, and Discord shows them on your profile (and loads the cover from
+  YouTube or SoundCloud, and the play/pause icon from this project on GitHub, itself).
 - **SponsorBlock isn't told which video you're playing:** the app asks about a group of
   many videos at once and picks out the right one itself.
 - **Lyrics are looked up only when you open the lyrics page,** for the song playing then.
@@ -165,6 +171,12 @@ in doesn't work for you, you can paste cookies from your browser instead; see
   video id's SHA-256 hash; LRCLIB (`lrclib.net`) and lrc.red, with the title, artist and
   length of the song whose lyrics you open; GitHub, to download or update yt-dlp and
   QuickJS; and, only on systems without a ready-made yt-dlp build, PyPI.
+- The Discord status (off by default) goes to the Discord app over its local connection
+  (a socket or named pipe on this computer), never to Discord's servers directly. Discord
+  receives the title, artist, length and link of the song playing, and the address of its
+  cover image; for SoundCloud tracks the app asks SoundCloud for that address. With colours
+  from cover art on, the play/pause icon is one in the app's accent colour, which Discord
+  loads from this repository (`raw.githubusercontent.com`).
 - Lyrics are cached in `~/.cache/local-playlist/lyrics/` (on Linux), one small file per
   song.
 - The tray icon uses the desktop's StatusNotifierItem tray on Linux (KDE, most other

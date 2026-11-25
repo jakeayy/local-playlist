@@ -10,6 +10,8 @@ compile_error!("on native targets the `ui` feature needs `desktop`");
 #[cfg(feature = "ui")]
 pub mod app;
 pub mod cover;
+#[cfg(feature = "desktop")]
+pub mod discord;
 pub mod download;
 #[cfg(feature = "desktop")]
 pub mod instance;

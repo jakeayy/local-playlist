@@ -1,4 +1,6 @@
-//! Full-size music visualizer shown in place of the track list.
+//! Full-size music visualizer shown in place of the track list: bars, or a
+//! Trap Nation-style circle: a disc that jumps and shakes with the bass,
+//! ringed by the bass spectrum with coloured trails that flare out on hits.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -12,7 +14,7 @@ use gpui_kit::*;
 
 use super::backdrop::{Backdrop, Palette};
 use crate::audio::Tap;
-use crate::spectrum::{FFT_LEN, Spectrum, Tuning};
+use crate::spectrum::{MAX_FFT_LEN, Spectrum, Tuning};
 
 const BANDS: usize = 64;
 
@@ -21,35 +23,43 @@ const BANDS: usize = 64;
 const GAP: f32 = 0.22;
 const PEAK_HEIGHT: f32 = 3.0;
 
+/// The tap gets audio in bursts (the output device's buffer, often 20 ms or
+/// more), so many frames see nothing new; playback counts as stopped only
+/// after this long without samples. Before that, frames reuse the last audio
+/// instead of falling for a frame and jumping back, which made everything
+/// flutter (most at high refresh rates).
+const STALL_MS: f64 = 150.0;
+
 // Circle (sizes are fractions of the smaller side of the area).
 /// Bands around each half of the circle (see [`Tuning::CIRCLE`]).
 const RING_BANDS: usize = 40;
 const RADIUS: f32 = 0.2;
-/// Extra radius at full bass.
-const PULSE: f32 = 0.16;
-/// Spike length at full level.
-const SPIKE: f32 = 0.24;
-/// Rings drawn behind the front one, each showing an older frame, a bit larger
-/// and in a shifted hue.
-const LAYERS: usize = 4;
-const FRAMES_PER_LAYER: usize = 2;
-const LAYER_SCALE: f32 = 0.06;
-/// Where the bass sits on each side, measured from the top (radians).
-/// Above it the frequencies rise towards the top centre; below it the outline
-/// tapers back to the disc.
-const BASS_ANGLE: f32 = 0.39 * PI;
-/// Weight of the highest band at the top centre (bass = 1).
-const TREBLE_WEIGHT: f32 = 0.45;
-/// Below the bass, how far up the spectrum the taper reaches (fraction of bands).
-const TAPER_BANDS: f32 = 0.3;
+/// How much larger the disc, its cover and the ring get at full bass
+/// ([`Spectrum::bass`]): the whole circle jumps with each kick and stays
+/// pumped while the bass keeps going, like Trap Nation's logo.
+const JUMP: f32 = 0.33;
+/// Spike length of the front (white) ring at full level.
+const SPIKE: f32 = 0.1;
+/// Coloured rings behind the front one, each `LAYER_DELAY_SECS` further
+/// behind, smoother, and in a shifted hue: a trail of each hit.
+const LAYERS: usize = 6;
+const LAYER_DELAY_SECS: f32 = 0.03;
+/// How the rings behind flare out (see [`flare`]): layer `n` draws a level
+/// `v` as `(1 + n·FLARE_GAIN) · v^(1 + n·FLARE_EXP)`. Quiet, they stay
+/// inside the front ring; on loud hits they shoot out past it, up to
+/// `1 + LAYERS·FLARE_GAIN` times as far.
+const FLARE_GAIN: f32 = 0.15;
+const FLARE_EXP: f32 = 0.12;
+/// Frames of ring history kept at most (the trails need 180 ms of them).
+const MAX_HISTORY: usize = 96;
 /// Outline points per side.
 const RING_POINTS: usize = 72;
 const MAX_PARTICLES: usize = 260;
-/// A kick: the ring's bass level (gated, so ~0 when the bass is quiet) above
-/// `KICK_MIN` and rising at least `KICK_RISE` over its recent average.
-const KICK_MIN: f32 = 0.4;
-const KICK_RISE: f32 = 0.18;
+/// The circle vibrates with the bass, smoothly: up to `SHAKE_PX` away at
+/// full bass (less on quieter bass, still when there's none), cycling up to
+/// `SHAKE_HZ` times a second.
 const SHAKE_PX: f32 = 7.0;
+const SHAKE_HZ: f32 = 9.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Style {
@@ -70,15 +80,18 @@ pub struct Visualizer {
     cover: Option<Arc<RenderImage>>,
     tap: Option<Tap>,
     spectrum: Spectrum,
-    /// Calmer, bass-led analysis for the circle.
+    /// The circle's spikes: only the bass, in fine steps (see [`Tuning::CIRCLE`]).
     ring: Spectrum,
     samples: Vec<f32>,
-    /// Tap counter at the previous frame (unchanged = nothing playing).
+    /// Tap counter at the previous frame, and when it last moved.
     last_written: u64,
+    last_audio_ms: f64,
     last_frame_ms: f64,
-    /// Recent band frames, newest first (for the trailing rings).
-    history: VecDeque<Vec<f32>>,
-    kicks: KickDetector,
+    /// Recent ring bands with their frame's time (`last_frame_ms`), newest
+    /// first (for the trailing rings), back to [`LAYERS`] × [`LAYER_DELAY_SECS`].
+    history: VecDeque<(f64, Vec<f32>)>,
+    /// Advances with the bass; drives the shake (see [`shake_offset`]).
+    shake_phase: f32,
     particles: Vec<Particle>,
     /// Fractional particles owed to the spawn rate.
     spawn_debt: f32,
@@ -100,11 +113,12 @@ impl Visualizer {
             tap,
             spectrum: Spectrum::new(BANDS, Tuning::BARS),
             ring: Spectrum::new(RING_BANDS, Tuning::CIRCLE),
-            samples: vec![0.0; FFT_LEN],
+            samples: vec![0.0; MAX_FFT_LEN],
             last_written: 0,
+            last_audio_ms: f64::NEG_INFINITY,
             last_frame_ms: crate::now_ms(),
             history: VecDeque::new(),
-            kicks: KickDetector::default(),
+            shake_phase: 0.0,
             particles: Vec::new(),
             spawn_debt: 0.0,
             rng,
@@ -134,31 +148,44 @@ impl Visualizer {
         let mut rate = 0;
         if let Some(tap) = &self.tap {
             let (r, written) = tap.latest(&mut self.samples);
-            playing = written != self.last_written;
-            self.last_written = written;
+            if written != self.last_written {
+                self.last_written = written;
+                self.last_audio_ms = now;
+            }
+            playing = now - self.last_audio_ms < STALL_MS;
             rate = r;
         }
         let input = playing.then_some((&self.samples[..], rate));
+        // The bars' analysis also gives the bass level, so it always runs; the
+        // ring's long FFT only while the circle shows (it settles within a few
+        // frames of switching).
         self.spectrum.update(input, dt);
-        self.ring.update(input, dt);
+        self.ring.update(input.filter(|_| self.style == Style::Circle), dt);
 
-        self.history.push_front(self.ring.bands().to_vec());
-        self.history.truncate(LAYERS * FRAMES_PER_LAYER + 1);
+        self.history.push_front((now, self.ring.bands().to_vec()));
+        // Keep one frame at least as old as the last layer needs, and never
+        // more than a few hundred frames a second would (if the clock jumps).
+        let keep_ms = (LAYERS as f32 * LAYER_DELAY_SECS * 1000.0) as f64;
+        while self.history.len() > 2 && now - self.history[self.history.len() - 2].0 >= keep_ms {
+            self.history.pop_back();
+        }
+        self.history.truncate(MAX_HISTORY);
 
-        self.kicks.update(self.ring.bass_raw(), playing, dt);
+        // From the bars' analysis: its shorter FFT sees a kick sooner.
+        let bass = self.spectrum.bass();
+        // Wrapped where every frequency in `shake_offset` completes whole cycles.
+        self.shake_phase = (self.shake_phase + 2.0 * PI * SHAKE_HZ * bass * dt) % (200.0 * PI);
 
         if self.style == Style::Circle {
             self.move_particles(playing, dt);
         }
-        playing
-            || !self.spectrum.is_silent()
-            || !self.ring.is_silent()
-            || !self.particles.is_empty()
-            || self.kicks.kick > 0.01
+        playing || !self.spectrum.is_silent() || !self.ring.is_silent() || !self.particles.is_empty()
     }
 
     fn move_particles(&mut self, playing: bool, dt: f32) {
-        let boost = 1.0 + 5.0 * self.kicks.kick + 2.0 * self.spectrum.bass();
+        let bass = self.spectrum.bass();
+        // Bursts outwards on hits.
+        let boost = 1.0 + 6.0 * bass * bass;
         for p in &mut self.particles {
             p.dist += p.speed * boost * dt;
         }
@@ -166,7 +193,7 @@ impl Visualizer {
         if !playing {
             return;
         }
-        self.spawn_debt += dt * (25.0 + 140.0 * self.spectrum.bass());
+        self.spawn_debt += dt * (25.0 + 140.0 * bass);
         while self.spawn_debt >= 1.0 {
             self.spawn_debt -= 1.0;
             if self.particles.len() >= MAX_PARTICLES {
@@ -246,20 +273,25 @@ impl Visualizer {
         // Geometry from the last paint, relative to the area's origin.
         let area = self.bounds.get().size;
         let unit = area.width.min(area.height);
+        let bass = self.spectrum.bass();
         let shake = if cx.reduce_motion() {
             point(px(0.), px(0.))
         } else {
-            let k = self.kicks.kick * self.kicks.kick * SHAKE_PX;
-            point(px((self.random() - 0.5) * 2.0 * k), px((self.random() - 0.5) * 2.0 * k))
+            let (x, y) = shake_offset(self.shake_phase);
+            let k = bass * bass * SHAKE_PX;
+            point(px(x * k), px(y * k))
         };
         let center = point(area.width / 2.0, area.height / 2.0) + shake;
-        let radius = unit * (RADIUS + PULSE * self.ring.bass().powf(1.5) * 0.5 + 0.02 * self.kicks.kick);
+        let radius = unit * RADIUS * (1.0 + JUMP * bass);
 
-        // Rings back to front: (levels, scale, color).
+        // Rings back to front: (profile, color).
         let front = theme.foreground;
         let mut rings = Vec::new();
         for layer in (0..=LAYERS).rev() {
-            let Some(levels) = self.history.get(layer * FRAMES_PER_LAYER).or(self.history.back()) else {
+            // The newest frame at least this layer's delay old.
+            let age_ms = (layer as f32 * LAYER_DELAY_SECS * 1000.0) as f64 - 0.1;
+            let now = self.last_frame_ms;
+            let Some((_, levels)) = self.history.iter().find(|(t, _)| now - t >= age_ms).or(self.history.back()) else {
                 break;
             };
             let color = if layer == 0 {
@@ -267,17 +299,17 @@ impl Visualizer {
             } else {
                 let mut c = theme.primary;
                 c.h = (c.h + 0.07 * (layer - 1) as f32).fract();
-                c.a = 0.85 - 0.12 * (layer - 1) as f32;
+                c.a = 0.85 - 0.1 * (layer - 1) as f32;
                 c
             };
-            rings.push((ring_profile(levels), 1.0 + LAYER_SCALE * layer as f32, color));
+            rings.push((layer_profile(levels, layer), color));
         }
         let particles: Vec<(f32, f32, f32)> = self.particles.iter().map(|p| (p.angle, p.dist, p.size)).collect();
         let particle_color = theme.foreground;
         let disc = theme.background;
         let backdrop = self.backdrop.clone();
         let palette = Palette::new(theme.background, theme.primary);
-        let (time, glow) = (self.time, self.ring.bass());
+        let (time, glow) = (self.time, bass);
 
         let paint = move |bounds: Bounds<Pixels>, _: (), window: &mut Window, _: &mut App| {
             backdrop.paint(bounds, time, glow, palette, window);
@@ -292,8 +324,8 @@ impl Visualizer {
                         .corner_radii(s / 2.0),
                 );
             }
-            for (levels, scale, color) in &rings {
-                if let Some(path) = spectrum_ring(c, radius, unit * SPIKE * *scale, levels) {
+            for (profile, color) in &rings {
+                if let Some(path) = spectrum_ring(c, radius, unit * SPIKE, profile) {
                     window.paint_path(path, *color);
                 }
             }
@@ -320,24 +352,13 @@ impl Visualizer {
     }
 }
 
-/// Spots kicks in a bass level; `kick` jumps to the hit's strength (0..1) and
-/// decays, driving the shake and the particle burst.
-#[derive(Default)]
-struct KickDetector {
-    /// Slow average of the bass.
-    avg: f32,
-    kick: f32,
-}
-
-impl KickDetector {
-    fn update(&mut self, bass: f32, playing: bool, dt: f32) {
-        if playing && bass > KICK_MIN && bass - self.avg > KICK_RISE {
-            let strength = ((bass - KICK_MIN) / (1.0 - KICK_MIN)).clamp(0.0, 1.0).sqrt();
-            self.kick = self.kick.max(strength);
-        }
-        self.avg += (bass - self.avg) * (1.0 - (-dt / 0.4).exp());
-        self.kick *= (-dt / 0.18).exp();
-    }
+/// Where the shake puts the circle (each axis about -1..1) at `phase`: a few
+/// sines at unrelated rates, so it wanders like a shaking speaker instead of
+/// circling. Every rate is a multiple of 1/100, so the phase can wrap at 200π.
+fn shake_offset(phase: f32) -> (f32, f32) {
+    let x = (phase.sin() + 0.5 * (2.37 * phase + 1.7).sin()) / 1.5;
+    let y = ((1.31 * phase + 0.5).sin() + 0.5 * (2.83 * phase + 4.1).sin()) / 1.5;
+    (x, y)
 }
 
 /// Uniform random number in 0..1 (xorshift; only for looks).
@@ -353,29 +374,38 @@ fn size2(s: Pixels) -> Size<Pixels> {
 }
 
 /// Spike height (0..1) at [`RING_POINTS`] angles from the top to the bottom
-/// of one side, from band levels (low to high): treble at the top centre,
-/// toned down, falling in pitch to the bass at [`BASS_ANGLE`], then the low
-/// bands again, tapering to nothing at the bottom.
+/// of one side, from band levels (low to high), as Trap Nation lays it out:
+/// the deepest notes at the top centre, rising in pitch down the side.
 fn ring_profile(levels: &[f32]) -> Vec<f32> {
     let last = (levels.len() - 1) as f32;
-    let at = |idx: f32| {
-        let i = (idx.clamp(0.0, last)).floor() as usize;
-        let f = idx - i as f32;
-        levels[i] * (1.0 - f) + levels[(i + 1).min(levels.len() - 1)] * f
-    };
     (0..RING_POINTS)
         .map(|i| {
-            let theta = PI * (i as f32 + 0.5) / RING_POINTS as f32;
-            if theta <= BASS_ANGLE {
-                let f = theta / BASS_ANGLE;
-                at((1.0 - f) * last) * (TREBLE_WEIGHT + (1.0 - TREBLE_WEIGHT) * f)
-            } else {
-                let t = (theta - BASS_ANGLE) / (PI - BASS_ANGLE);
-                let taper = (1.0 - t) * (1.0 - t) * (3.0 - 2.0 * (1.0 - t)); // smoothstep
-                at(t * TAPER_BANDS * last) * taper
-            }
+            let idx = (i as f32 + 0.5) / RING_POINTS as f32 * last;
+            let b = idx.floor() as usize;
+            let f = idx - b as f32;
+            levels[b] * (1.0 - f) + levels[(b + 1).min(levels.len() - 1)] * f
         })
         .collect()
+}
+
+/// The profile of ring `layer` (0 = front): smoother the further back, and
+/// flared (see [`flare`]).
+fn layer_profile(levels: &[f32], layer: usize) -> Vec<f32> {
+    let n = levels.len();
+    let mut levels = levels.to_vec();
+    for _ in 0..layer {
+        levels = (0..n)
+            .map(|b| 0.25 * levels[b.saturating_sub(1)] + 0.5 * levels[b] + 0.25 * levels[(b + 1).min(n - 1)])
+            .collect();
+    }
+    ring_profile(&levels).into_iter().map(|v| flare(v, layer)).collect()
+}
+
+/// Spike height of `level` in ring `layer`, relative to the front's at full
+/// level (see [`FLARE_GAIN`]).
+fn flare(level: f32, layer: usize) -> f32 {
+    let n = layer as f32;
+    (1.0 + n * FLARE_GAIN) * level.max(0.0).powf(1.0 + n * FLARE_EXP)
 }
 
 /// Closed smooth outline around `center`: a side's [`ring_profile`] mirrored
@@ -408,18 +438,33 @@ fn spectrum_ring(center: Point<Pixels>, radius: Pixels, spike: Pixels, profile: 
 
 #[cfg(test)]
 mod tests {
-    use super::{BASS_ANGLE, PI, RING_BANDS, RING_POINTS, TREBLE_WEIGHT, ring_profile};
+    use super::{LAYERS, RING_BANDS, RING_POINTS, flare, layer_profile, ring_profile};
 
     #[test]
-    fn bass_peaks_at_the_side_and_tapers() {
-        // Strong bass, a little treble.
-        let levels: Vec<f32> = (0..RING_BANDS).map(|b| if b < 6 { 1.0 } else { 0.2 }).collect();
-        let p = ring_profile(&levels);
-        let peak = p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
-        let peak_angle = PI * (peak as f32 + 0.5) / RING_POINTS as f32;
-        assert!((peak_angle - BASS_ANGLE).abs() < 0.15 * PI, "peak at {:.0}°", peak_angle.to_degrees());
-        // Treble at the top is toned down, the bottom is flat.
-        assert!(p[0] < 0.2 * TREBLE_WEIGHT + 0.01);
-        assert!(p[RING_POINTS - 1] < 0.01);
+    fn deepest_notes_at_the_top() {
+        let peak = |levels: &[f32]| {
+            let p = ring_profile(levels);
+            assert_eq!(p.len(), RING_POINTS);
+            p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0
+        };
+        let low: Vec<f32> = (0..RING_BANDS).map(|b| if b < 4 { 1.0 } else { 0.1 }).collect();
+        assert!(peak(&low) < RING_POINTS / 8, "{}", peak(&low));
+        let high: Vec<f32> = (0..RING_BANDS).map(|b| if b >= RING_BANDS - 4 { 1.0 } else { 0.1 }).collect();
+        assert!(peak(&high) > RING_POINTS * 7 / 8, "{}", peak(&high));
+    }
+
+    #[test]
+    fn trails_flare_out_only_on_loud_hits() {
+        // The front ring draws levels as they are.
+        assert_eq!(flare(0.6, 0), 0.6);
+        // The last trail stays inside it when quiet and shoots past it when loud.
+        assert!(flare(0.3, LAYERS) < 0.3);
+        assert!(flare(1.0, LAYERS) > 1.5);
+        // Further back, smoother: a lone loud band spreads out and drops.
+        let mut levels = vec![0.0; RING_BANDS];
+        levels[RING_BANDS / 2] = 1.0;
+        let front = layer_profile(&levels, 0).into_iter().fold(0.0, f32::max);
+        let back = layer_profile(&levels, LAYERS).into_iter().fold(0.0, f32::max);
+        assert!(back < front, "{back} vs {front}");
     }
 }
