@@ -180,6 +180,46 @@ pub fn parse_link(input: &str) -> Result<Link> {
     }
 }
 
+/// Links found in a list of them (a text file, the clipboard, a pasted block).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LinkList {
+    /// Supported links, in order, without repeats.
+    pub links: Vec<Link>,
+    /// Lines that held text but no supported link.
+    pub skipped: usize,
+}
+
+/// Find the links in a list with one link per line. Blank lines and lines
+/// starting with `#` are ignored, so a commented text file works as is. A line
+/// can carry other text around its link ("Artist - Title https://…"), as
+/// exports from other players often do; then each word is tried in turn.
+pub fn parse_link_list(text: &str) -> LinkList {
+    let mut list = LinkList::default();
+    for line in text.lines() {
+        let line = line.trim().trim_start_matches('\u{feff}');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Not the whole line: spaces would end up inside a SoundCloud path.
+        let found = line
+            .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '<' | '>' | '"' | '\''))
+            .map(|word| word.trim_matches(|c| matches!(c, '(' | ')' | '[' | ']')))
+            .filter(|word| word.contains('.'))
+            .filter_map(|word| parse_link(word).ok());
+        let mut any = false;
+        for link in found {
+            any = true;
+            if !list.links.contains(&link) {
+                list.links.push(link);
+            }
+        }
+        if !any {
+            list.skipped += 1;
+        }
+    }
+    list
+}
+
 #[cfg(not(target_family = "wasm"))]
 /// Shared HTTP agent. A generic browser-like user agent is used; no cookies are kept.
 pub fn http() -> &'static ureq::Agent {
@@ -388,5 +428,29 @@ mod tests {
         );
         assert!(parse_link("https://soundcloud.com/discover").is_err());
         assert!(parse_link("https://soundcloud.com/forss/followers").is_err());
+    }
+
+    #[test]
+    fn parses_link_lists() {
+        let text = "\u{feff}# my songs\r\n\
+            https://www.youtube.com/watch?v=dQw4w9WgXcQ\r\n\
+            \r\n\
+            youtu.be/dQw4w9WgXcQ\n\
+            Forss - Flickermood (https://soundcloud.com/forss/flickermood)\n\
+            not a link\n\
+            https://example.com/song\n\
+            https://music.youtube.com/playlist?list=PLxyz, https://soundcloud.com/forss/sets/soulhack\n";
+        let list = parse_link_list(text);
+        assert_eq!(
+            list.links,
+            vec![
+                Link::YouTubeVideo { id: "dQw4w9WgXcQ".into(), list: None },
+                Link::SoundCloudTrack { url: "https://soundcloud.com/forss/flickermood".into() },
+                Link::YouTubePlaylist { list: "PLxyz".into() },
+                Link::SoundCloudSet { url: "https://soundcloud.com/forss/sets/soulhack".into() },
+            ]
+        );
+        assert_eq!(list.skipped, 2);
+        assert_eq!(parse_link_list(""), LinkList::default());
     }
 }

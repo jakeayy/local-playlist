@@ -31,7 +31,7 @@ use crate::model::{Library, Paths, Platform, Playlist, RepeatMode, Track, format
 use crate::secrets::{Credentials, KeyStorage, SecretStore};
 use crate::sources::{self, Link, Resolved};
 use crate::ytdlp::{self, Component, State, Status, YtDlp};
-use gpui_kit::component::input::TextareaState;
+use gpui_kit::component::input::{Textarea, TextareaState};
 
 use crate::audio::Input as AudioInput;
 use crate::download::Download;
@@ -127,6 +127,8 @@ pub struct LocalPlaylist {
 
     url_input: Entity<InputState>,
     import_input: Entity<InputState>,
+    /// Many links, one per line ("Add many links").
+    bulk_input: Entity<TextareaState>,
     name_input: Entity<InputState>,
     search_input: Entity<InputState>,
     seek: Entity<SliderState>,
@@ -140,6 +142,10 @@ pub struct LocalPlaylist {
 
     adding: bool,
     importing: bool,
+    /// The "Add many links" panel above the track list is open.
+    bulk_open: bool,
+    /// Links of a running "Add many links" resolved so far, and how many there are.
+    bulk_progress: Option<(usize, usize)>,
     /// The sidebar's "Import playlist" section is expanded.
     import_open: bool,
     view: View,
@@ -211,6 +217,7 @@ pub struct LocalPlaylist {
 struct Inputs {
     url_input: Entity<InputState>,
     import_input: Entity<InputState>,
+    bulk_input: Entity<TextareaState>,
     name_input: Entity<InputState>,
     search_input: Entity<InputState>,
     server_password: Entity<InputState>,
@@ -224,6 +231,10 @@ impl Inputs {
                 InputState::new(window, cx).placeholder("Paste a YouTube / SoundCloud track or playlist link…")
             }),
             import_input: cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL")),
+            bulk_input: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .placeholder("One YouTube or SoundCloud link per line (# starts a comment)")
+            }),
             name_input: cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name")),
             search_input: cx.new(|cx| InputState::new(window, cx).placeholder("Search title or artist")),
             server_password: cx.new(|cx| InputState::new(window, cx).placeholder("Server password").masked(true)),
@@ -272,7 +283,7 @@ impl LocalPlaylist {
             cx.new(|_| visualizer::Visualizer::new(tap))
         };
 
-        let Inputs { url_input, import_input, name_input, search_input, server_password, cookie_input } =
+        let Inputs { url_input, import_input, bulk_input, name_input, search_input, server_password, cookie_input } =
             Inputs::new(window, cx);
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001).default_value(0.));
         let volume = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.01).default_value(library.settings.volume));
@@ -401,6 +412,7 @@ impl LocalPlaylist {
             last_skip: None,
             url_input,
             import_input,
+            bulk_input,
             name_input,
             search_input,
             seek,
@@ -410,6 +422,8 @@ impl LocalPlaylist {
             last_shown: (false, false),
             adding: false,
             importing: false,
+            bulk_open: false,
+            bulk_progress: None,
             // Open to start with only while there's nothing to play yet.
             import_open: selected.is_none(),
             view: View::Playlist,
@@ -532,6 +546,7 @@ impl LocalPlaylist {
         let inputs = Inputs::new(window, cx);
         self.url_input = inputs.url_input;
         self.import_input = inputs.import_input;
+        self.bulk_input = inputs.bulk_input;
         self.name_input = inputs.name_input;
         self.search_input = inputs.search_input;
         self.server_password = inputs.server_password;
@@ -821,6 +836,175 @@ impl LocalPlaylist {
                     }
                     Err(e) => this.report_error(e, window, cx),
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// "Add many links": the links typed or pasted into the panel's box.
+    fn add_from_bulk_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.bulk_input.read(cx).value().to_string();
+        self.add_link_list(&text, true, window, cx);
+    }
+
+    /// "Add many links": the links on the clipboard.
+    fn add_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bulk_progress.is_some() {
+            return;
+        }
+        // The async read: in the browser the plain one never has anything.
+        let read = cx.read_from_clipboard_async();
+        cx.spawn_in(window, async move |this, cx| {
+            let text = match read.await {
+                Ok(item) => item.and_then(|item| item.text()).unwrap_or_default(),
+                Err(e) => {
+                    let _ = this.update_in(cx, |_, window, cx| {
+                        let msg = format!("Couldn't read the clipboard: {e}");
+                        window.push_notification(Notification::warning(msg), cx);
+                    });
+                    return;
+                }
+            };
+            let _ = this.update_in(cx, |this, window, cx| this.add_link_list(&text, false, window, cx));
+        })
+        .detach();
+    }
+
+    /// "Add many links": the links in a text file (desktop; browsers can't
+    /// open a file picker for the app).
+    fn add_from_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bulk_progress.is_some() {
+            return;
+        }
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Add links".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match rx.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                // E.g. Linux without a file chooser portal.
+                Ok(Err(e)) => {
+                    let _ = this.update_in(cx, |_, window, cx| {
+                        let msg = format!("Couldn't open a file picker: {e:#}");
+                        window.push_notification(Notification::error(msg), cx);
+                    });
+                    None
+                }
+                _ => None,
+            };
+            let Some(path) = path else { return };
+            let read = cx.background_spawn(async move { read_link_file(&path) }).await;
+            let _ = this.update_in(cx, |this, window, cx| match read {
+                Ok(text) => this.add_link_list(&text, false, window, cx),
+                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Add every link in `text` (one per line) to the selected playlist, or
+    /// to a new one. Links are resolved one after another and their tracks
+    /// show up as they arrive; tracks the playlist has already are skipped.
+    fn add_link_list(&mut self, text: &str, clear_input: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bulk_progress.is_some() {
+            return;
+        }
+        let sources::LinkList { links, skipped } = sources::parse_link_list(text);
+        if links.is_empty() {
+            let msg = if skipped > 0 { "No YouTube or SoundCloud links found." } else { "There are no links to add." };
+            window.push_notification(Notification::warning(msg), cx);
+            return;
+        }
+        if self.selected.is_none() {
+            self.new_playlist(window, cx);
+        }
+        let Some(target) = self.selected.clone() else { return };
+        let total = links.len();
+        self.bulk_progress = Some((0, total));
+        cx.notify();
+
+        let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
+        cx.spawn(async move |this, cx| {
+            let (mut added, mut present, mut failed) = (0, 0, 0);
+            let mut first_error = None;
+            for (i, link) in links.into_iter().enumerate() {
+                let as_collection = link.is_collection();
+                let (paths, ytdlp, creds) = (paths.clone(), ytdlp.clone(), creds.clone());
+                let task = cx.update(|cx| sources::resolve_task(cx, link, as_collection, paths, ytdlp, creds));
+                let result = task.await;
+                let go_on = this.update(cx, |this, cx| {
+                    this.bulk_progress = Some((i + 1, total));
+                    cx.notify();
+                    let Some(p) = this.library.playlist_mut(&target) else { return false };
+                    match result {
+                        Ok(resolved) => {
+                            for track in resolved.into_tracks() {
+                                let known = |t: &Track| t.platform == track.platform && t.source_id == track.source_id;
+                                if p.tracks.iter().any(known) {
+                                    present += 1;
+                                } else {
+                                    p.tracks.push(track);
+                                    added += 1;
+                                }
+                            }
+                            this.save_later();
+                            true
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            // The web UI lost its server session: the rest would fail too.
+                            #[cfg(target_family = "wasm")]
+                            let locked = e.to_string() == crate::web::api::UNAUTHORIZED;
+                            #[cfg(not(target_family = "wasm"))]
+                            let locked = false;
+                            first_error.get_or_insert(e);
+                            !locked
+                        }
+                    }
+                });
+                if !go_on.unwrap_or(false) {
+                    break;
+                }
+            }
+            Self::finish(&this, cx, move |this, mut window, cx| {
+                this.bulk_progress = None;
+                this.save();
+                crate::mem::trim(); // resolving parsed large JSON pages
+                if added == 0
+                    && present == 0
+                    && let Some(e) = first_error
+                {
+                    this.report_error(e, window, cx);
+                    cx.notify();
+                    return;
+                }
+                if clear_input
+                    && failed == 0
+                    && let Some(window) = window.as_deref_mut()
+                {
+                    this.bulk_input.update(cx, |i, cx| i.set_value("", window, cx));
+                    this.bulk_open = false;
+                }
+                let tracks = |n: usize| if n == 1 { "1 track".to_string() } else { format!("{n} tracks") };
+                let mut msg = match (added, present) {
+                    (0, present) => format!("Nothing new: {} already in the playlist", tracks(present)),
+                    (added, 0) => format!("Added {}", tracks(added)),
+                    (added, present) => format!("Added {}, {present} already in the playlist", tracks(added)),
+                };
+                if skipped > 0 {
+                    msg += &format!("; {skipped} line{} without a link", if skipped == 1 { "" } else { "s" });
+                }
+                let note = match first_error {
+                    Some(e) => {
+                        Notification::warning(format!("{msg}. {failed} of {total} links failed, the first with: {e:#}"))
+                    }
+                    None => Notification::success(msg),
+                };
+                this.note(window, note, cx);
                 cx.notify();
             });
         })
@@ -1831,6 +2015,19 @@ fn cover_image(bytes: &[u8], max_px: u32, accent: bool) -> anyhow::Result<CoverI
 }
 
 /// Small xorshift shuffle; no need for cryptographic randomness.
+/// Read a list of links. Lists are small; a size limit keeps a wrongly picked
+/// file (a video, a disk image) from being read into memory.
+fn read_link_file(path: &std::path::Path) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+    const MAX: u64 = 4 << 20;
+    let size = std::fs::metadata(path).with_context(|| format!("Couldn't open {}", path.display()))?.len();
+    if size > MAX {
+        anyhow::bail!("{} is too big for a list of links ({} MB)", path.display(), size >> 20);
+    }
+    let bytes = std::fs::read(path).with_context(|| format!("Couldn't read {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn shuffle<T>(v: &mut [T]) {
     let mut seed = (crate::now_ms() * 1000.0) as u64 ^ 0x9E37_79B9_7F4A_7C15 | 1;
     for i in (1..v.len()).rev() {
@@ -2296,8 +2493,20 @@ impl LocalPlaylist {
                                     .label("Add")
                                     .loading(self.adding)
                                     .on_click(cx.listener(|this, _, window, cx| this.add_from_input(window, cx))),
+                            )
+                            .child(
+                                Button::new("bulk-toggle")
+                                    .icon(IconName::ListMusic)
+                                    .when(self.bulk_open, |b| b.primary())
+                                    .when(!self.bulk_open, |b| b.ghost())
+                                    .tooltip("Add many links (a list, the clipboard or a text file)")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.bulk_open = !this.bulk_open;
+                                        cx.notify();
+                                    })),
                             ),
-                    ),
+                    )
+                    .when(self.bulk_open, |d| d.child(self.render_bulk_add(&theme, cx))),
             )
             .child(
                 div()
@@ -2337,6 +2546,60 @@ impl LocalPlaylist {
                                 .child(Scrollbar::vertical(&self.list_scroll)),
                         )
                     }),
+            )
+            .into_any_element()
+    }
+
+    /// "Add many links": a box for a list of links, or take them from the
+    /// clipboard or a text file.
+    fn render_bulk_add(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.bulk_progress.is_some();
+        let label = match self.bulk_progress {
+            Some((done, total)) => format!("Adding {done} of {total}…"),
+            None => "Add links".to_string(),
+        };
+        v_flex()
+            .gap_2()
+            .child(Textarea::new(&self.bulk_input).h(px(110.)).disabled(busy))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        Button::new("bulk-add")
+                            .small()
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(label)
+                            .loading(busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.add_from_bulk_input(window, cx))),
+                    )
+                    .child(
+                        Button::new("bulk-clipboard")
+                            .small()
+                            .icon(IconName::Copy)
+                            .label("From clipboard")
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.add_from_clipboard(window, cx))),
+                    )
+                    .when(!crate::WEB, |d| {
+                        d.child(
+                            Button::new("bulk-file")
+                                .small()
+                                .icon(IconName::FileText)
+                                .label("From file…")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, window, cx| this.add_from_file(window, cx))),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("Tracks and playlists are added here; ones already in the playlist are skipped."),
+                    ),
             )
             .into_any_element()
     }

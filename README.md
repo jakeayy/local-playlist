@@ -59,6 +59,8 @@ them in the app, also offline. No account, no ads, no tracking.
   side. Just paste a link.
 - **Import whole playlists** from YouTube and YouTube Music, and SoundCloud sets, profiles
   and likes. Public ones don't need a login.
+- **Add many links at once:** paste a list (one link per line), take it from the
+  clipboard, or open a text file.
 - **Starts playing right away**, while the track is still downloading, and the next one
   is ready before the current one ends.
 - **Your music, offline:** every track is saved as an ordinary audio file (with its cover)
@@ -108,7 +110,10 @@ Pre-releases are builds of the newest changes. They may be less stable.
    playlist link under **Import playlist** (at the bottom of the sidebar) and click
    **Import as new playlist**.
 3. **Add songs** by pasting a YouTube or SoundCloud link into the box above the track list
-   and clicking **Add**.
+   and clicking **Add**. To add many at once, click the list button next to **Add**: paste
+   one link per line and click **Add links**, or use **From clipboard** or **From file…**
+   (a text file; lines starting with `#` are skipped). Songs already in the playlist
+   aren't added twice.
 4. **Click a track to play it.** It's saved to your Music folder as it plays (Settings →
    Storage shows where, and lets you change it).
 
