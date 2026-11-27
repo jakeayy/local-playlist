@@ -96,11 +96,13 @@ Where things live:
 | `src/web/` | Browser build: entry point, server API client, `<audio>` playback, stand-ins |
 | `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
 | `src/download.rs` | Shared download state |
-| `src/storage.rs` | Music folder layout, removed-tracks cache |
+| `src/storage.rs` | Music folder layout, removed-tracks cache, replaced tracks' originals |
 | `src/lyrics/` | Lyrics lookup (LRCLIB, lrc.red), artist/title guessing, LRC and Lyricsfile parsing |
 | `src/app/lyrics.rs` | The lyrics page (karaoke highlighting) |
 | `src/tray.rs` | Tray icon for playing in the background (Linux: ksni, Windows: Shell_NotifyIcon) |
 | `src/discord.rs` | Discord Rich Presence over the Discord app's local IPC (images: `docs/discord/`; `draws_accent_icons` redraws the accent ones) |
+| `src/soulseek.rs` | Soulseek client: login, search, downloading one file from a peer |
+| `src/app/soulseek.rs` | "Find on Soulseek" page, its warning and the Soulseek account in Settings |
 
 [AGENTS.md](AGENTS.md) has a more detailed map and the project's conventions.
 

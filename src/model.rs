@@ -47,6 +47,21 @@ pub struct Track {
     pub artist: String,
     #[serde(default)]
     pub duration_secs: Option<u32>,
+    /// The audio file was replaced with this one from Soulseek (desktop);
+    /// the original is kept to restore (see `storage::replace_audio`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soulseek: Option<SoulseekFile>,
+}
+
+/// A file picked on Soulseek to play instead of a track's own audio.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SoulseekFile {
+    /// Who shared it.
+    pub user: String,
+    /// Its path on their computer.
+    pub path: String,
+    /// "FLAC 16/44.1", "MP3 320".
+    pub quality: String,
 }
 
 impl Track {
@@ -66,6 +81,7 @@ impl Track {
             title: title.into(),
             artist: artist.into(),
             duration_secs,
+            soulseek: None,
         }
     }
 
@@ -109,6 +125,10 @@ impl Playlist {
     pub fn new(name: impl Into<String>) -> Self {
         Self { id: new_id(), name: name.into(), folder: None, tracks: Vec::new() }
     }
+
+    pub fn track_mut(&mut self, id: &str) -> Option<&mut Track> {
+        self.tracks.iter_mut().find(|t| t.id == id)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -133,6 +153,8 @@ pub struct Settings {
     pub sponsorblock: bool,
     /// Desktop: show what's playing on the Discord profile.
     pub discord: DiscordSettings,
+    /// Desktop: the Soulseek warning (peer to peer, sharing, bans) was accepted.
+    pub soulseek_accepted: bool,
 }
 
 impl Default for Settings {
@@ -149,6 +171,7 @@ impl Default for Settings {
             cover_colors: true,
             sponsorblock: true,
             discord: Default::default(),
+            soulseek_accepted: false,
         }
     }
 }

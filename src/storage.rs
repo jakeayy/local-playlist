@@ -7,6 +7,8 @@
 //!   it again. The cache is size-limited and drops the oldest files first.
 //! * Temp downloads go to `<playlist folder>/.downloading/<key>/` (same
 //!   filesystem, so finishing a download is just a rename).
+//! * A track whose audio was replaced (with a file from Soulseek) keeps its
+//!   own file in `<playlist folder>/.originals/`, to put back on request.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,6 +20,7 @@ use crate::model::{Library, Paths, Platform, Playlist, Settings, Track};
 use crate::ytdlp::AUDIO_EXTS;
 
 pub const DOWNLOADING_DIR: &str = ".downloading";
+pub const ORIGINALS_DIR: &str = ".originals";
 
 #[cfg(target_family = "wasm")]
 pub fn default_music_root() -> PathBuf {
@@ -202,6 +205,10 @@ pub fn materialize_with(
     // Present in another playlist's folder.
     for other in library.playlists.iter().filter(|p| p.id != playlist.id) {
         if let Some(p) = index.find(&playlist_dir(&root, other), &key) {
+            // Not a file picked on Soulseek there: this track wasn't replaced.
+            if other.tracks.iter().any(|t| t.soulseek.is_some() && t.file_key() == key) {
+                continue;
+            }
             return place(index, &p, true);
         }
     }
@@ -219,9 +226,67 @@ pub fn materialize_with(
     None
 }
 
+/// Play `new_file` as the track's audio from now on: move it to
+/// `<dir>/<key>.<ext>`. The file there before is kept in `.originals/` if
+/// `keep_current` (the track's own audio), else deleted (an earlier
+/// replacement, whose original is kept already).
+pub fn replace_audio(dir: &Path, key: &str, new_file: &Path, keep_current: bool) -> Result<PathBuf> {
+    let ext = new_file.extension().and_then(|e| e.to_str()).context("file without an extension")?;
+    let dest = dir.join(format!("{key}.{ext}"));
+    let originals = dir.join(ORIGINALS_DIR);
+    let mut backup = None;
+    if let Some(current) = find_file(dir, key) {
+        if keep_current {
+            std::fs::create_dir_all(&originals)?;
+            if let Some(stale) = find_file(&originals, key) {
+                std::fs::remove_file(stale)?;
+            }
+            let kept = originals.join(current.file_name().context("no file name")?);
+            move_file(&current, &kept)?;
+            backup = Some((kept, current));
+        } else {
+            std::fs::remove_file(&current).with_context(|| format!("remove {}", current.display()))?;
+        }
+    }
+    if let Err(e) = move_file(new_file, &dest) {
+        // Put the original back rather than leave the track without audio.
+        if let Some((kept, current)) = backup {
+            let _ = move_file(&kept, &current);
+        }
+        return Err(e);
+    }
+    Ok(dest)
+}
+
+/// Undo [`replace_audio`]: delete the replacement and put the original back.
+/// `Ok(false)` if no original was kept (it was never downloaded).
+pub fn restore_original(dir: &Path, key: &str) -> Result<bool> {
+    if let Some(current) = find_file(dir, key) {
+        std::fs::remove_file(&current).with_context(|| format!("remove {}", current.display()))?;
+    }
+    let originals = dir.join(ORIGINALS_DIR);
+    let Some(original) = find_file(&originals, key) else { return Ok(false) };
+    move_file(&original, &dir.join(original.file_name().context("no file name")?))?;
+    let _ = std::fs::remove_dir(originals); // only if now empty
+    Ok(true)
+}
+
 /// Move a track's file out of a playlist folder into the removed cache.
+/// For a replaced track that's its original; the replacement is deleted.
 pub fn retire(paths: &Paths, root: &Path, playlist: &Playlist, track: &Track, limit_bytes: u64) {
-    let Some(file) = find_file(&playlist_dir(root, playlist), &track.file_key()) else { return };
+    let dir = playlist_dir(root, playlist);
+    let key = track.file_key();
+    let file = if track.soulseek.is_some() {
+        if let Some(replacement) = find_file(&dir, &key) {
+            let _ = std::fs::remove_file(replacement);
+        }
+        let original = find_file(&dir.join(ORIGINALS_DIR), &key);
+        let _ = std::fs::remove_dir(dir.join(ORIGINALS_DIR));
+        original
+    } else {
+        find_file(&dir, &key)
+    };
+    let Some(file) = file else { return };
     let removed = removed_dir(paths);
     if std::fs::create_dir_all(&removed).is_err() {
         return;
@@ -305,6 +370,7 @@ pub fn retire_playlist(paths: &Paths, root: &Path, playlist: &Playlist, limit_by
     }
     let dir = playlist_dir(root, playlist);
     let _ = std::fs::remove_dir_all(dir.join(DOWNLOADING_DIR));
+    let _ = std::fs::remove_dir_all(dir.join(ORIGINALS_DIR));
     // Only removes the folder when empty, so unrelated user files are never deleted.
     let _ = std::fs::remove_dir(&dir);
 }
@@ -319,6 +385,37 @@ mod tests {
         assert_eq!(sanitize("  ..  "), "Playlist");
         assert_eq!(sanitize("con"), "con_");
         assert_eq!(sanitize("Chill 🎧"), "Chill 🎧");
+    }
+
+    #[test]
+    fn replaces_and_restores() {
+        let dir = std::env::temp_dir().join(format!("lp-replace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(DOWNLOADING_DIR)).unwrap();
+        let write = |name: &str, text: &str| {
+            let p = dir.join(DOWNLOADING_DIR).join(name);
+            std::fs::write(&p, text).unwrap();
+            p
+        };
+        std::fs::write(dir.join("YouTube-x.m4a"), "original").unwrap();
+
+        // Replace, then replace again: the original stays kept.
+        let first = replace_audio(&dir, "YouTube-x", &write("a.flac", "first"), true).unwrap();
+        assert_eq!(first, dir.join("YouTube-x.flac"));
+        assert!(!dir.join("YouTube-x.m4a").exists());
+        replace_audio(&dir, "YouTube-x", &write("b.mp3", "second"), false).unwrap();
+        assert_eq!(std::fs::read_to_string(find_file(&dir, "YouTube-x").unwrap()).unwrap(), "second");
+        assert_eq!(std::fs::read_to_string(dir.join(ORIGINALS_DIR).join("YouTube-x.m4a")).unwrap(), "original");
+
+        assert!(restore_original(&dir, "YouTube-x").unwrap());
+        assert_eq!(find_file(&dir, "YouTube-x"), Some(dir.join("YouTube-x.m4a")));
+        assert!(!dir.join(ORIGINALS_DIR).exists());
+
+        // Never downloaded: nothing to keep, nothing to put back.
+        replace_audio(&dir, "YouTube-y", &write("c.mp3", "only"), true).unwrap();
+        assert!(!restore_original(&dir, "YouTube-y").unwrap());
+        assert_eq!(find_file(&dir, "YouTube-y"), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

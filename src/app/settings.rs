@@ -126,7 +126,7 @@ impl LocalPlaylist {
 
     // -------------------------------------------------------------- accounts
 
-    fn persist_creds(&mut self) {
+    pub(super) fn persist_creds(&mut self) {
         match SecretStore::new(&self.paths).save(&self.creds) {
             Ok(storage) => self.key_storage = Some(storage),
             Err(e) => self.notify_error(format!("Could not save login: {e:#}")),
@@ -298,7 +298,14 @@ impl LocalPlaylist {
         )
     }
 
-    pub(super) fn render_settings(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "desktop")]
+        let soulseek_account = Some(self.render_soulseek_account(window, cx));
+        #[cfg(not(feature = "desktop"))]
+        let soulseek_account: Option<AnyElement> = {
+            let _ = window;
+            None
+        };
         let theme = cx.theme().clone();
         let section = |title: &'static str, desc: SharedString| {
             v_flex()
@@ -602,6 +609,7 @@ impl LocalPlaylist {
                                 "Optional. Needed only for private playlists, Liked videos and your likes. Logging in opens the platform's own sign-in page in a private window.".into(),
                             ))
                             .children(accounts)
+                            .children(soulseek_account)
                             .child(div().text_xs().text_color(theme.muted_foreground).child(storage_note)),
                     ))
                     .when(!crate::WEB, |d| d.child(

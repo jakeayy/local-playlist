@@ -4,6 +4,8 @@ mod backdrop;
 mod lyrics;
 mod progress;
 mod settings;
+#[cfg(feature = "desktop")]
+mod soulseek;
 mod thumbs;
 mod visualizer;
 
@@ -57,6 +59,9 @@ struct FilterCache {
 enum View {
     Playlist,
     Settings,
+    /// "Find on Soulseek" for a track (desktop; `soulseek.rs`).
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    Soulseek,
 }
 
 /// What the playlist page shows: its tracks, or a page about what's playing.
@@ -209,6 +214,9 @@ pub struct LocalPlaylist {
     /// Track list thumbnails.
     thumbs: thumbs::Thumbs,
     _subscriptions: Vec<Subscription>,
+    /// "Find on Soulseek" (desktop).
+    #[cfg(feature = "desktop")]
+    slsk: soulseek::SoulseekUi,
     _ticker: Task<()>,
 }
 
@@ -466,6 +474,8 @@ impl LocalPlaylist {
             accent_shown: None,
             accent_fade: None,
             thumbs: thumbs::Thumbs::default(),
+            #[cfg(feature = "desktop")]
+            slsk: Default::default(),
             _subscriptions: subscriptions,
             _ticker: ticker,
         };
@@ -568,6 +578,7 @@ impl LocalPlaylist {
         // Their textures went with the window; thumbnails load again when shown.
         self.stale_covers.clear();
         self.thumbs = thumbs::Thumbs::default();
+        self.slsk.inputs = None;
         crate::mem::trim();
     }
 
@@ -1012,6 +1023,22 @@ impl LocalPlaylist {
     }
 
     /// Show an error, or the server login screen if the server wants a password.
+    /// "Find on Soulseek" for a track (desktop).
+    fn find_on_soulseek(&mut self, playlist_id: &str, track_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "desktop")]
+        self.open_soulseek(playlist_id, track_id, window, cx);
+        #[cfg(not(feature = "desktop"))]
+        let _ = (playlist_id, track_id, window, cx);
+    }
+
+    /// Undo a track's Soulseek replacement (desktop).
+    fn restore_original(&mut self, playlist_id: &str, track_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "desktop")]
+        self.restore_original_audio(playlist_id, track_id, window, cx);
+        #[cfg(not(feature = "desktop"))]
+        let _ = (playlist_id, track_id, window, cx);
+    }
+
     fn report_error(&mut self, e: anyhow::Error, window: Option<&mut Window>, cx: &mut Context<Self>) {
         #[cfg(target_family = "wasm")]
         if e.to_string() == crate::web::api::UNAUTHORIZED {
@@ -1777,6 +1804,8 @@ impl LocalPlaylist {
     /// Five times a second, with or without a window: playback, downloads,
     /// saving.
     fn tick(&mut self, cx: &mut Context<Self>) {
+        #[cfg(feature = "desktop")]
+        self.soulseek_tick(cx);
         if self.installing.is_some() {
             cx.notify();
         }
@@ -2342,7 +2371,19 @@ impl LocalPlaylist {
                                     div().into_any_element()
                                 }),
                             )
-                            .child(platform_badge(t.platform, &theme))
+                            .child(match &t.soulseek {
+                                #[cfg(feature = "desktop")]
+                                Some(f) => {
+                                    let tip = format!("Plays {} from {} on Soulseek", f.quality, f.user);
+                                    soulseek::soulseek_badge(&theme)
+                                        .id(("slsk-badge", ix))
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                                        })
+                                        .into_any_element()
+                                }
+                                _ => platform_badge(t.platform, &theme).into_any_element(),
+                            })
                             .child(
                                 div()
                                     .w(px(56.))
@@ -2355,6 +2396,34 @@ impl LocalPlaylist {
                             .child(
                                 h_flex()
                                     .gap_0p5()
+                                    .when(!crate::WEB, |d| {
+                                        let (pid, tid) = (playlist_id.clone(), t.id.clone());
+                                        d.child(
+                                            Button::new(("slsk", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Search)
+                                                .tooltip("Find on Soulseek")
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.find_on_soulseek(&pid, &tid, window, cx);
+                                                })),
+                                        )
+                                    })
+                                    .when(t.soulseek.is_some(), |d| {
+                                        let (pid, tid) = (playlist_id.clone(), t.id.clone());
+                                        d.child(
+                                            Button::new(("restore", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Undo2)
+                                                .tooltip("Restore original")
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.restore_original(&pid, &tid, window, cx);
+                                                })),
+                                        )
+                                    })
                                     .when(!filtering, |d| {
                                         d.child(
                                             Button::new(("up", ix)).ghost().xsmall().icon(IconName::ArrowUp).on_click(
@@ -2851,26 +2920,21 @@ impl LocalPlaylist {
 }
 
 fn platform_badge(platform: Platform, theme: &gpui_kit::component::Theme) -> impl IntoElement {
-    // Tonal chip in the platform's hue, tuned for light/dark surfaces.
     let hue = match platform {
         Platform::YouTube => 0. / 360.,
         Platform::SoundCloud => 22. / 360.,
     };
+    badge(platform.label(), hue, theme)
+}
+
+/// Tonal chip in a hue, tuned for light/dark surfaces.
+fn badge(label: &'static str, hue: f32, theme: &gpui_kit::component::Theme) -> Div {
     let (fg, bg) = if theme.is_dark() {
         (hsla(hue, 0.9, 0.78, 1.), hsla(hue, 0.6, 0.5, 0.18))
     } else {
         (hsla(hue, 0.75, 0.38, 1.), hsla(hue, 0.9, 0.55, 0.12))
     };
-    div()
-        .flex_none()
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .text_xs()
-        .font_medium()
-        .text_color(fg)
-        .bg(bg)
-        .child(platform.label())
+    div().flex_none().px_2().py_0p5().rounded_full().text_xs().font_medium().text_color(fg).bg(bg).child(label)
 }
 
 impl Render for LocalPlaylist {
@@ -2903,6 +2967,10 @@ impl Render for LocalPlaylist {
                                 Panel::Tracks => self.render_main(window, cx).into_any_element(),
                             },
                             View::Settings => self.render_settings(window, cx).into_any_element(),
+                            #[cfg(feature = "desktop")]
+                            View::Soulseek => self.render_soulseek(window, cx),
+                            #[cfg(not(feature = "desktop"))]
+                            View::Soulseek => div().into_any_element(),
                         })),
                 ),
             )
