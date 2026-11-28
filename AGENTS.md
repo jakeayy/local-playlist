@@ -204,7 +204,11 @@ only).
   `v<version>` and the images `:<version>`, `:latest` and `:dev`. **Don't bump the version
   unless asked**: merging it publishes a release.
 - `build.yml` builds every download. Linux binaries are built on Ubuntu 24.04 and need
-  glibc 2.39, which is why the Docker runtime image is Debian trixie.
+  glibc 2.39, which is why the Docker runtime image is Debian trixie. The Android server
+  (`aarch64-linux-android`, for Termux) is built with the runner's NDK through
+  `.github/android-ndk-env.sh`; `ci.yml` builds it on every pull request. Android has no
+  yt-dlp or QuickJS builds: yt-dlp runs from source with Termux's Python, and the
+  JavaScript runtime comes from PATH (`ytdlp_asset` / `qjs_asset` return `None`).
 - Actions are pinned to full commit SHAs with the version in a comment
   (`uses: owner/action@<sha> # v1.2.3`); Dependabot updates them. Pin any new action the
   same way. Workflows get a read-only token; only the jobs that publish get write permissions.

@@ -63,6 +63,16 @@ cargo build --release --no-default-features --features server
 
 The Docker image can also be built from source: `docker build -t local-playlist .`
 
+The Android server (for Termux) is the same build for `aarch64-linux-android`, with the
+[Android NDK](https://developer.android.com/ndk/downloads) (r26 or newer) as linker:
+
+```sh
+rustup target add aarch64-linux-android
+export ANDROID_NDK_LATEST_HOME=/path/to/android-ndk
+eval "$(.github/android-ndk-env.sh | sed 's/^/export /')"
+cargo build --release --target aarch64-linux-android --no-default-features --features server
+```
+
 Cargo features: `desktop` (GPUI app, audio, webview login, keyring; implies `ui`) is on
 by default. `server` adds `--server`; it embeds the web UI (~6 MB), so it's opt-in for
 desktop builds. The browser build uses only `ui`.

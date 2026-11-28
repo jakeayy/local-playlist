@@ -235,6 +235,28 @@ Or download the `…-server` version from the Releases page and run
 - To use it from outside your network, put it behind HTTPS (a reverse proxy).
 - All options: `local-playlist --server --help`.
 
+### On an Android phone
+
+The server also runs on Android 7 or newer (64-bit ARM), in
+[Termux](https://termux.dev/) from F-Droid or GitHub (the Play Store version is outdated).
+Download the `…-android-arm64-server.tar.gz` version from the Releases page, then in
+Termux:
+
+```sh
+pkg install python nodejs        # Python runs yt-dlp; Node.js solves YouTube's challenges
+termux-setup-storage             # lets Termux see your Downloads folder
+tar -xzf ~/storage/downloads/local-playlist-*-android-arm64-server.tar.gz -C ~
+termux-wake-lock                 # keeps Android from pausing Termux
+~/local-playlist-*-android-arm64-server/local-playlist --server
+```
+
+It asks for a password; then open `http://localhost:8080` in the phone's browser, or
+`http://<phone's IP>:8080` from another device on the same Wi-Fi. The first start
+downloads yt-dlp. If songs stop downloading part way, Android 12 or newer is stopping
+programs that Termux starts: turn on "Disable child process restrictions" in the developer
+options (Android 14+), or on Android 12–13 run, from a computer with `adb`,
+`adb shell "settings put global settings_enable_monitor_phantom_procs false"`.
+
 ## Help and feedback
 
 - **Something broke?** YouTube and SoundCloud change things now and then. Please

@@ -3,8 +3,9 @@
 #
 #   local-playlist-<label>-{linux,windows}-x64            desktop app + login window
 #   local-playlist-<label>-{linux,windows}-x64-server     server, with the web UI
+#   local-playlist-<label>-android-arm64-server           server for Android (Termux)
 #
-# The web UI (wasm) is built once and embedded into both servers.
+# The web UI (wasm) is built once and embedded into every server.
 
 name: Build
 
@@ -165,4 +166,47 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+          if-no-files-found: error
+
+  # The server for Android phones, run under Termux (see "Web version" in the
+  # README). Built with the NDK the runner image comes with; API level 24
+  # (Android 7) is the oldest Termux supports.
+  android:
+    name: Server (android-arm64)
+    needs: web
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGE: local-playlist-${{ inputs.label }}-android-arm64-server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Embedded by build.rs when present.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: web/dist
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Use the Android NDK
+        run: .github/android-ndk-env.sh >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --target aarch64-linux-android --no-default-features --features server
+
+      - name: Package
+        run: |
+          mkdir -p "dist/$PACKAGE"
+          cp target/aarch64-linux-android/release/local-playlist README.md LICENSE "dist/$PACKAGE/"
+          tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-android-arm64-server
+          path: dist/*.tar.gz
           if-no-files-found: error
