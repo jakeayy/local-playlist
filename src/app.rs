@@ -40,6 +40,9 @@ use crate::download::Download;
 use crate::sponsorblock::Segment;
 use crate::storage;
 
+/// Below this window width (phones) the layout is a single column.
+const COMPACT_WIDTH: f32 = 640.;
+
 #[derive(Clone)]
 struct NowPlaying {
     playlist_id: String,
@@ -154,6 +157,11 @@ pub struct LocalPlaylist {
     /// The sidebar's "Import playlist" section is expanded.
     import_open: bool,
     view: View,
+    /// The window is phone-narrow ([`COMPACT_WIDTH`]): one column, with the
+    /// playlists on a screen of their own.
+    compact: bool,
+    /// Narrow window: the playlists screen is showing instead of the page.
+    drawer_open: bool,
     components: Option<Status>,
     /// Status text and progress of a running component install.
     installing: Option<Arc<Mutex<(String, Option<f32>)>>>,
@@ -435,6 +443,8 @@ impl LocalPlaylist {
             // Open to start with only while there's nothing to play yet.
             import_open: selected.is_none(),
             view: View::Playlist,
+            compact: false,
+            drawer_open: false,
             components: None,
             installing: None,
             creds,
@@ -723,6 +733,7 @@ impl LocalPlaylist {
 
     fn select(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.view = View::Playlist;
+        self.drawer_open = false;
         self.selected = id;
         self.confirm_delete = false;
         let name = self.selected_playlist().map(|p| p.name.clone()).unwrap_or_default();
@@ -2101,13 +2112,14 @@ impl LocalPlaylist {
         let import_open = self.import_open;
         let settings_open = self.view == View::Settings;
 
+        let compact = self.compact;
         v_flex()
-            .w(px(260.))
+            .when(compact, |d| d.w_full())
+            .when(!compact, |d| d.w(px(260.)).border_r_1())
             .h_full()
             .flex_none()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
-            .border_r_1()
             .border_color(theme.sidebar_border)
             .child(
                 h_flex()
@@ -2221,7 +2233,12 @@ impl LocalPlaylist {
                             .icon(IconName::Settings)
                             .label("Settings & accounts")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.view = if this.view == View::Settings { View::Playlist } else { View::Settings };
+                                this.view = if this.view == View::Settings && !this.drawer_open {
+                                    View::Playlist
+                                } else {
+                                    View::Settings
+                                };
+                                this.drawer_open = false;
                                 cx.notify();
                             })),
                     ),
@@ -2270,6 +2287,7 @@ impl LocalPlaylist {
                 };
                 let Some(p) = this.selected_playlist() else { return Vec::new() };
                 let now_id = this.now.as_ref().map(|n| n.track.id.clone());
+                let compact = this.compact;
                 let loading = this.is_buffering();
                 let paused = this.audio.as_ref().is_some_and(|a| a.is_paused());
                 let rows: Vec<(usize, Track)> = range
@@ -2304,24 +2322,32 @@ impl LocalPlaylist {
                             .id(ix)
                             .w_full()
                             .h(px(48.))
-                            .px_3()
-                            .gap_3()
+                            .when(compact, |d| d.px_1().gap_2())
+                            .when(!compact, |d| d.px_3().gap_3())
                             .rounded_lg()
                             .cursor_pointer()
                             .when(current, |d| d.bg(theme.primary.alpha(0.12)))
                             .hover(|d| d.bg(theme.list_hover))
-                            .child(div().w(px(28.)).flex_none().text_sm().text_color(theme.muted_foreground).child(
-                                if current && loading {
-                                    Icon::new(IconName::LoaderCircle)
-                                        .small()
-                                        .text_color(theme.primary)
-                                        .into_any_element()
-                                } else if current && !paused {
-                                    Icon::new(IconName::Volume2).small().text_color(theme.primary).into_any_element()
-                                } else {
-                                    (ix + 1).to_string().into_any_element()
-                                },
-                            ))
+                            .child(
+                                div()
+                                    .w(px(if compact { 20. } else { 28. }))
+                                    .flex_none()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .child(if current && loading {
+                                        Icon::new(IconName::LoaderCircle)
+                                            .small()
+                                            .text_color(theme.primary)
+                                            .into_any_element()
+                                    } else if current && !paused {
+                                        Icon::new(IconName::Volume2)
+                                            .small()
+                                            .text_color(theme.primary)
+                                            .into_any_element()
+                                    } else {
+                                        (ix + 1).to_string().into_any_element()
+                                    }),
+                            )
                             .child(thumbs::cover_tile(thumb, px(36.), &theme))
                             .child(
                                 v_flex()
@@ -2341,35 +2367,37 @@ impl LocalPlaylist {
                             )
                             .child(
                                 // Download status: progress, error, or on disk.
-                                div().w(px(36.)).flex_none().flex().justify_end().child(if let Some(p) = progress {
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child(format!("{:.0}%", p * 100.))
-                                        .into_any_element()
-                                } else if let Some(err) = this.download_errors.get(&target).cloned() {
-                                    div()
-                                        .id(("dl-err", ix))
-                                        .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
-                                        .tooltip(move |window, cx| {
-                                            gpui_kit::component::tooltip::Tooltip::new(format!(
-                                                "Download failed: {err}"
-                                            ))
-                                            .build(window, cx)
-                                        })
-                                        .into_any_element()
-                                } else if downloaded {
-                                    div()
-                                        .id(("dl-ok", ix))
-                                        .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
-                                        .tooltip(|window, cx| {
-                                            gpui_kit::component::tooltip::Tooltip::new("Downloaded — plays offline")
+                                div().w(px(if compact { 20. } else { 36. })).flex_none().flex().justify_end().child(
+                                    if let Some(p) = progress {
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(format!("{:.0}%", p * 100.))
+                                            .into_any_element()
+                                    } else if let Some(err) = this.download_errors.get(&target).cloned() {
+                                        div()
+                                            .id(("dl-err", ix))
+                                            .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(format!(
+                                                    "Download failed: {err}"
+                                                ))
                                                 .build(window, cx)
-                                        })
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                }),
+                                            })
+                                            .into_any_element()
+                                    } else if downloaded {
+                                        div()
+                                            .id(("dl-ok", ix))
+                                            .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
+                                            .tooltip(|window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new("Downloaded — plays offline")
+                                                    .build(window, cx)
+                                            })
+                                            .into_any_element()
+                                    } else {
+                                        div().into_any_element()
+                                    },
+                                ),
                             )
                             .child(match &t.soulseek {
                                 #[cfg(feature = "desktop")]
@@ -2382,11 +2410,12 @@ impl LocalPlaylist {
                                         })
                                         .into_any_element()
                                 }
+                                _ if compact => div().into_any_element(),
                                 _ => platform_badge(t.platform, &theme).into_any_element(),
                             })
                             .child(
                                 div()
-                                    .w(px(56.))
+                                    .w(px(if compact { 36. } else { 56. }))
                                     .flex_none()
                                     .text_right()
                                     .text_sm()
@@ -2424,7 +2453,7 @@ impl LocalPlaylist {
                                                 })),
                                         )
                                     })
-                                    .when(!filtering, |d| {
+                                    .when(!filtering && !compact, |d| {
                                         d.child(
                                             Button::new(("up", ix)).ghost().xsmall().icon(IconName::ArrowUp).on_click(
                                                 cx.listener(move |this, _, _, cx| {
@@ -2434,7 +2463,7 @@ impl LocalPlaylist {
                                             ),
                                         )
                                     })
-                                    .when(!filtering, |d| {
+                                    .when(!filtering && !compact, |d| {
                                         d.child(
                                             Button::new(("down", ix))
                                                 .ghost()
@@ -2535,14 +2564,19 @@ impl LocalPlaylist {
                             )
                             .when(count > 0, |d| {
                                 d.child(
-                                    div().w(px(260.)).flex_shrink(1.).child(
-                                        Input::new(&self.search_input)
-                                            .small()
-                                            .prefix(
-                                                Icon::new(IconName::Search).small().text_color(theme.muted_foreground),
-                                            )
-                                            .cleanable(true),
-                                    ),
+                                    div()
+                                        .when(self.compact, |d| d.flex_1().min_w(px(120.)))
+                                        .when(!self.compact, |d| d.w(px(260.)).flex_shrink(1.))
+                                        .child(
+                                            Input::new(&self.search_input)
+                                                .small()
+                                                .prefix(
+                                                    Icon::new(IconName::Search)
+                                                        .small()
+                                                        .text_color(theme.muted_foreground),
+                                                )
+                                                .cleanable(true),
+                                        ),
                                 )
                             }),
                     )
@@ -2773,7 +2807,7 @@ impl LocalPlaylist {
             .into_any_element()
     }
 
-    fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         // The bar touches the window's bottom corners, which may be rounded.
         let radii = gpui_kit::component::window_corner_radii(window, cx);
@@ -2799,22 +2833,100 @@ impl LocalPlaylist {
         // The full cover once loaded; the list thumbnail until then.
         let now_track = self.now.as_ref().map(|n| n.track.clone());
         let cover = self.now_cover.clone().or_else(|| now_track.and_then(|t| self.thumb(&t, cx)));
+        let compact = self.compact;
         let info = h_flex()
             .gap_3()
             .min_w_0()
-            .when(self.now.is_some(), |d| d.child(thumbs::cover_tile(cover, px(52.), &theme)))
+            .when(self.now.is_some(), |d| {
+                d.child(thumbs::cover_tile(cover, px(if compact { 40. } else { 52. }), &theme))
+            })
             .child(info.min_w_0().flex_1());
 
-        h_flex()
+        let shuffle = Button::new("shuffle")
+            .ghost()
+            .small()
+            .icon(IconName::Shuffle)
+            .toggled(settings.shuffle)
+            .tooltip(if settings.shuffle { "Shuffle: on" } else { "Shuffle: off" })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.library.settings.shuffle = !this.library.settings.shuffle;
+                if let Some(id) = this.now.as_ref().map(|n| n.track.id.clone()) {
+                    this.reshuffle(&id);
+                }
+                this.save();
+                cx.notify();
+            }));
+        let prev = Button::new("prev")
+            .ghost()
+            .icon(IconName::SkipBack)
+            .on_click(cx.listener(|this, _, _, cx| this.previous(cx)));
+        let play = Button::new("play")
+            .primary()
+            .rounded(gpui_kit::component::button::ButtonRounded::Large)
+            .icon(if playing { IconName::Pause } else { IconName::Play })
+            .loading(loading.is_some())
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx)));
+        let next = Button::new("next")
+            .ghost()
+            .icon(IconName::SkipForward)
+            .on_click(cx.listener(|this, _, _, cx| this.skip(1, false, cx)));
+        let repeat = Button::new("repeat")
+            .ghost()
+            .small()
+            .icon(if settings.repeat == RepeatMode::One { IconName::Repeat1 } else { IconName::Repeat })
+            .toggled(settings.repeat != RepeatMode::Off)
+            .tooltip(match settings.repeat {
+                RepeatMode::Off => "Repeat: off",
+                RepeatMode::All => "Repeat: playlist",
+                RepeatMode::One => "Repeat: track",
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.library.settings.repeat = this.library.settings.repeat.next();
+                this.save();
+                cx.notify();
+            }));
+        let lyrics = Button::new("lyrics")
+            .ghost()
+            .small()
+            .icon(IconName::MicVocal)
+            .toggled(self.panel == Panel::Lyrics && self.view == View::Playlist)
+            .tooltip("Lyrics")
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Lyrics, cx)));
+        let visualizer = Button::new("visualizer")
+            .ghost()
+            .small()
+            .icon(IconName::AudioLines)
+            .toggled(self.panel == Panel::Visualizer && self.view == View::Playlist)
+            .tooltip("Visualizer")
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Visualizer, cx)));
+        // Its own view, so the clock ticking redraws just this row.
+        let progress = self.progress.clone();
+
+        let bar = |d: Div| {
+            d.flex_none()
+                .border_t_1()
+                .border_color(theme.border)
+                .bg(theme.sidebar)
+                .rounded_bl(radii.bottom_left)
+                .rounded_br(radii.bottom_right)
+        };
+        if compact {
+            // Phones: what's playing and the main buttons, the seek row, then
+            // the toggles. Volume is left to the device's own buttons.
+            return bar(v_flex())
+                .px_3()
+                .pt_2()
+                .pb_1()
+                .gap_1()
+                .child(h_flex().gap_1().child(div().flex_1().min_w_0().child(info)).child(prev).child(play).child(next))
+                .child(div().w_full().child(progress))
+                .child(h_flex().justify_around().child(shuffle).child(repeat).child(lyrics).child(visualizer))
+                .into_any_element();
+        }
+        bar(h_flex())
             .h(px(84.))
-            .flex_none()
             .px_4()
             .gap_4()
-            .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.sidebar)
-            .rounded_bl(radii.bottom_left)
-            .rounded_br(radii.bottom_right)
             .child(div().w(px(260.)).flex_none().child(info))
             .child(
                 v_flex()
@@ -2822,93 +2934,16 @@ impl LocalPlaylist {
                     .min_w_0()
                     .gap_1()
                     .items_center()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("shuffle")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Shuffle)
-                                    .toggled(settings.shuffle)
-                                    .tooltip(if settings.shuffle { "Shuffle: on" } else { "Shuffle: off" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.library.settings.shuffle = !this.library.settings.shuffle;
-                                        if let Some(id) = this.now.as_ref().map(|n| n.track.id.clone()) {
-                                            this.reshuffle(&id);
-                                        }
-                                        this.save();
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("prev")
-                                    .ghost()
-                                    .icon(IconName::SkipBack)
-                                    .on_click(cx.listener(|this, _, _, cx| this.previous(cx))),
-                            )
-                            .child(
-                                Button::new("play")
-                                    .primary()
-                                    .rounded(gpui_kit::component::button::ButtonRounded::Large)
-                                    .icon(if playing { IconName::Pause } else { IconName::Play })
-                                    .loading(loading.is_some())
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
-                            )
-                            .child(
-                                Button::new("next")
-                                    .ghost()
-                                    .icon(IconName::SkipForward)
-                                    .on_click(cx.listener(|this, _, _, cx| this.skip(1, false, cx))),
-                            )
-                            .child(
-                                Button::new("repeat")
-                                    .ghost()
-                                    .small()
-                                    .icon(if settings.repeat == RepeatMode::One {
-                                        IconName::Repeat1
-                                    } else {
-                                        IconName::Repeat
-                                    })
-                                    .toggled(settings.repeat != RepeatMode::Off)
-                                    .tooltip(match settings.repeat {
-                                        RepeatMode::Off => "Repeat: off",
-                                        RepeatMode::All => "Repeat: playlist",
-                                        RepeatMode::One => "Repeat: track",
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.library.settings.repeat = this.library.settings.repeat.next();
-                                        this.save();
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    // Its own view, so the clock ticking redraws just this row.
-                    .child(div().w_full().max_w(px(640.)).child(self.progress.clone())),
+                    .child(h_flex().gap_2().child(shuffle).child(prev).child(play).child(next).child(repeat))
+                    .child(div().w_full().max_w(px(640.)).child(progress)),
             )
             .child(
                 h_flex()
                     .w(px(244.))
                     .flex_none()
                     .gap_2()
-                    .child(
-                        Button::new("lyrics")
-                            .ghost()
-                            .small()
-                            .icon(IconName::MicVocal)
-                            .toggled(self.panel == Panel::Lyrics && self.view == View::Playlist)
-                            .tooltip("Lyrics")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Lyrics, cx))),
-                    )
-                    .child(
-                        Button::new("visualizer")
-                            .ghost()
-                            .small()
-                            .icon(IconName::AudioLines)
-                            .toggled(self.panel == Panel::Visualizer && self.view == View::Playlist)
-                            .tooltip("Visualizer")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Visualizer, cx))),
-                    )
+                    .child(lyrics)
+                    .child(visualizer)
                     .child(
                         Icon::new(if settings.volume <= 0.001 { IconName::VolumeX } else { IconName::Volume2 })
                             .small()
@@ -2916,6 +2951,7 @@ impl LocalPlaylist {
                     )
                     .child(div().flex_1().child(Slider::new(&self.volume))),
             )
+            .into_any_element()
     }
 }
 
@@ -2942,6 +2978,11 @@ impl Render for LocalPlaylist {
         if crate::WEB && self.server_locked {
             return self.render_server_login(cx).into_any_element();
         }
+        self.compact = window.viewport_size().width < px(COMPACT_WIDTH);
+        if !self.compact {
+            self.drawer_open = false;
+        }
+        let page = if self.compact && self.drawer_open { None } else { Some(self.render_page(window, cx)) };
         let theme = cx.theme();
         let radii = gpui_kit::component::window_corner_radii(window, cx);
         v_flex()
@@ -2954,25 +2995,11 @@ impl Render for LocalPlaylist {
             .rounded_br(radii.bottom_right)
             .when(Self::has_title_bar(window), |d| d.child(self.render_title_bar(cx)))
             .child(
-                h_flex().flex_1().min_h_0().child(self.render_sidebar(window, cx)).child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
-                        .child(div().flex_1().min_h_0().child(match self.view {
-                            View::Playlist => match self.panel {
-                                Panel::Visualizer => self.render_visualizer(cx).into_any_element(),
-                                Panel::Lyrics => self.lyrics.clone().into_any_element(),
-                                Panel::Tracks => self.render_main(window, cx).into_any_element(),
-                            },
-                            View::Settings => self.render_settings(window, cx).into_any_element(),
-                            #[cfg(feature = "desktop")]
-                            View::Soulseek => self.render_soulseek(window, cx),
-                            #[cfg(not(feature = "desktop"))]
-                            View::Soulseek => div().into_any_element(),
-                        })),
-                ),
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .when(!self.compact || self.drawer_open, |d| d.child(self.render_sidebar(window, cx)))
+                    .children(page),
             )
             .child(self.render_player(window, cx))
             .into_any_element()
@@ -2980,6 +3007,55 @@ impl Render for LocalPlaylist {
 }
 
 impl LocalPlaylist {
+    /// The page beside the sidebar (on phones, under a bar that opens the playlists).
+    fn render_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let content = match self.view {
+            View::Playlist => match self.panel {
+                Panel::Visualizer => self.render_visualizer(cx).into_any_element(),
+                Panel::Lyrics => self.lyrics.clone().into_any_element(),
+                Panel::Tracks => self.render_main(window, cx).into_any_element(),
+            },
+            View::Settings => self.render_settings(window, cx).into_any_element(),
+            #[cfg(feature = "desktop")]
+            View::Soulseek => self.render_soulseek(window, cx),
+            #[cfg(not(feature = "desktop"))]
+            View::Soulseek => div().into_any_element(),
+        };
+        let theme = cx.theme();
+        let title: SharedString = match self.view {
+            View::Settings => "Settings".into(),
+            View::Soulseek => "Find on Soulseek".into(),
+            View::Playlist => match self.panel {
+                Panel::Lyrics => "Lyrics".into(),
+                Panel::Visualizer => "Now playing".into(),
+                Panel::Tracks => "Playlists".into(),
+            },
+        };
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .when(self.compact, |d| {
+                d.child(
+                    h_flex().flex_none().px_2().py_1().gap_1().border_b_1().border_color(theme.border).child(
+                        Button::new("open-drawer")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Menu)
+                            .label(title)
+                            .tooltip("Playlists, import and settings")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.drawer_open = true;
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
+            .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
+            .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
+    }
+
     /// Whether the app draws its own title bar: always on the desktop, except on
     /// Linux when the window manager kept server-side decorations (X11 without a
     /// compositor, some tiling compositors) and so already draws one.
