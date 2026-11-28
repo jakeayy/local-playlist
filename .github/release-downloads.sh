@@ -10,7 +10,8 @@ echo
 echo "| Platform | Download |"
 echo "| --- | --- |"
 for row in "windows-x64.zip|Windows x64" "windows-x64-server.zip|Windows x64 (server)" \
-    "linux-x64.tar.gz|Linux x64" "linux-x64-server.tar.gz|Linux x64 (server)"; do
+    "linux-x64.tar.gz|Linux x64" "linux-x64-server.tar.gz|Linux x64 (server)" \
+    "android-arm64-server.tar.gz|Android (server, for Termux)"; do
     suffix=${row%%|*}
     platform=${row#*|}
     for file in dist/*-"$suffix"; do
@@ -28,5 +29,7 @@ cat <<EOF
   window for logging in to YouTube / SoundCloud (on Linux it needs WebKitGTK 4.1).
 - **Server:** \`local-playlist --server\` serves the web version (UI included) for browsers;
   see "Web version" in the README. Docker: \`docker pull ghcr.io/${GITHUB_REPOSITORY,,}:$image_tag\`
+- **Android server:** runs in Termux (Android 7+, 64-bit ARM) with \`pkg install python nodejs\`;
+  see "On an Android phone" in the README.
 - Linux builds need glibc 2.39 or newer (e.g. Ubuntu 24.04, Debian 13, Fedora 40).
 EOF

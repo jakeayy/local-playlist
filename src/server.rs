@@ -25,7 +25,7 @@ use crate::model::{Paths, Platform, Track};
 use crate::secrets::Credentials;
 use crate::sources::{self, Link};
 use crate::storage::{self, find_file};
-use crate::ytdlp::{Component, Source, YtDlp};
+use crate::ytdlp::{Component, Source, State as ComponentState, YtDlp};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const BOOT_JS: &str = include_str!("../web/boot.js");
@@ -134,6 +134,16 @@ pub fn run(args: &[String]) -> Result<()> {
     for c in ytdlp.missing_managed() {
         eprintln!("Downloading {}…", c.label());
         ytdlp.install(c, &|_, _| {}).with_context(|| format!("failed to download {}", c.label()))?;
+    }
+    let status = ytdlp.status();
+    if matches!(status.ytdlp, ComponentState::Missing) {
+        eprintln!("warning: yt-dlp is missing, so audio can't be fetched");
+    }
+    if matches!(status.js, ComponentState::Missing) {
+        eprintln!(
+            "warning: no JavaScript runtime on PATH (deno, node, bun or qjs); YouTube needs one \
+             (Termux: pkg install nodejs)"
+        );
     }
     let audio_dir = paths.cache.join("server-audio");
     let _ = std::fs::remove_dir_all(audio_dir.join(storage::DOWNLOADING_DIR));

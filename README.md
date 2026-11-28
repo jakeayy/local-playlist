@@ -59,6 +59,8 @@ them in the app, also offline. No account, no ads, no tracking.
   side. Just paste a link.
 - **Import whole playlists** from YouTube and YouTube Music, and SoundCloud sets, profiles
   and likes. Public ones don't need a login.
+- **Add many links at once:** paste a list (one link per line), take it from the
+  clipboard, or open a text file.
 - **Starts playing right away**, while the track is still downloading, and the next one
   is ready before the current one ends.
 - **Your music, offline:** every track is saved as an ordinary audio file (with its cover)
@@ -75,6 +77,13 @@ them in the app, also offline. No account, no ads, no tracking.
 - **Visualizer:** bars, or a circle over a night sky that moves with the music.
 - **Keeps playing in the background:** close the window and the music goes on, with an
   icon in the system tray to bring it back, pause, skip or quit (desktop app).
+- **Find a song on Soulseek** (optional, desktop app): the search button on a track looks
+  for "Artist - Title" on the Soulseek peer-to-peer network and lists the files found, best
+  quality first (lossless, then by bitrate). Pick one and it plays instead of the
+  YouTube/SoundCloud audio; **Restore original** puts the original back. Needs a Soulseek
+  account (Settings → Accounts), and the app asks you to accept what peer to peer means
+  first: other users see your IP address, Soulseek expects you to share back (the app
+  doesn't share anything), and users or Soulseek can ban you for not sharing.
 - **Discord status** (optional, desktop app): show what you're playing on your Discord
   profile, with the cover, how far along it is, and buttons to the song and the project.
 - **Light and dark themes**, with colours taken from the cover of what's playing.
@@ -108,7 +117,10 @@ Pre-releases are builds of the newest changes. They may be less stable.
    playlist link under **Import playlist** (at the bottom of the sidebar) and click
    **Import as new playlist**.
 3. **Add songs** by pasting a YouTube or SoundCloud link into the box above the track list
-   and clicking **Add**.
+   and clicking **Add**. To add many at once, click the list button next to **Add**: paste
+   one link per line and click **Add links**, or use **From clipboard** or **From file…**
+   (a text file; lines starting with `#` are skipped). Songs already in the playlist
+   aren't added twice.
 4. **Click a track to play it.** It's saved to your Music folder as it plays (Settings →
    Storage shows where, and lets you change it).
 
@@ -149,6 +161,11 @@ in doesn't work for you, you can paste cookies from your browser instead; see
   The lyrics services see that song's title and artist (there's no way to ask for lyrics
   without saying which song), never who you are: no account, key or cookies. Each song is
   looked up once and kept on your computer.
+- **Soulseek is only used when you search it** (desktop app, after you accept its warning).
+  It's peer to peer: the Soulseek server sees your search, and the users who answer, or
+  whom you download from, see your IP address. The app shares nothing and doesn't listen
+  for connections; it disconnects once you leave the Soulseek page and no download is
+  running.
 - **Logging in is optional.** Without it, the app uses only what YouTube and SoundCloud
   show to any visitor, and sends no cookies. If you do log in, your login stays on your
   computer, encrypted, with the key in your system keyring (or, without one, in a private
@@ -172,7 +189,11 @@ in doesn't work for you, you can paste cookies from your browser instead; see
   (`sponsor.ajay.app`, unless turned off), which gets only the first 4 characters of the
   video id's SHA-256 hash; LRCLIB (`lrclib.net`) and lrc.red, with the title, artist and
   length of the song whose lyrics you open; GitHub, to download or update yt-dlp and
-  QuickJS; and, only on systems without a ready-made yt-dlp build, PyPI.
+  QuickJS; and, only on systems without a ready-made yt-dlp build, PyPI. If you use "Find
+  on Soulseek": the Soulseek server (`server.slsknet.org`), with your Soulseek login and
+  the search, and the computers of the Soulseek users who answer it.
+- A track's own file, when replaced with one from Soulseek, waits in `.originals/` in the
+  playlist's folder until you restore it or remove the track.
 - The Discord status (off by default) goes to the Discord app over its local connection
   (a socket or named pipe on this computer), never to Discord's servers directly. Discord
   receives the title, artist, length and link of the song playing, and the address of its
@@ -213,6 +234,28 @@ Or download the `…-server` version from the Releases page and run
 - Run it on a home connection: YouTube often blocks servers in data centres.
 - To use it from outside your network, put it behind HTTPS (a reverse proxy).
 - All options: `local-playlist --server --help`.
+
+### On an Android phone
+
+The server also runs on Android 7 or newer (64-bit ARM), in
+[Termux](https://termux.dev/) from F-Droid or GitHub (the Play Store version is outdated).
+Download the `…-android-arm64-server.tar.gz` version from the Releases page, then in
+Termux:
+
+```sh
+pkg install python nodejs        # Python runs yt-dlp; Node.js solves YouTube's challenges
+termux-setup-storage             # lets Termux see your Downloads folder
+tar -xzf ~/storage/downloads/local-playlist-*-android-arm64-server.tar.gz -C ~
+termux-wake-lock                 # keeps Android from pausing Termux
+~/local-playlist-*-android-arm64-server/local-playlist --server
+```
+
+It asks for a password; then open `http://localhost:8080` in the phone's browser, or
+`http://<phone's IP>:8080` from another device on the same Wi-Fi. The first start
+downloads yt-dlp. If songs stop downloading part way, Android 12 or newer is stopping
+programs that Termux starts: turn on "Disable child process restrictions" in the developer
+options (Android 14+), or on Android 12–13 run, from a computer with `adb`,
+`adb shell "settings put global settings_enable_monitor_phantom_procs false"`.
 
 ## Help and feedback
 

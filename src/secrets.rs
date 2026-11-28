@@ -51,6 +51,23 @@ pub struct Credentials {
     /// Selected YouTube channel (Brand Account); `None` = default channel.
     #[serde(default)]
     pub youtube_channel: Option<crate::sources::youtube::Channel>,
+    /// Soulseek account. Its protocol logs in with the password itself, so
+    /// that is what's kept (encrypted like the cookies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soulseek: Option<SoulseekLogin>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SoulseekLogin {
+    pub username: String,
+    pub password: String,
+}
+
+/// Never print the password.
+impl std::fmt::Debug for SoulseekLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SoulseekLogin").field("username", &self.username).finish_non_exhaustive()
+    }
 }
 
 fn platform_key(p: Platform) -> &'static str {

@@ -26,15 +26,16 @@ The server embeds the web UI only if `web/dist/` exists when it is built (`build
 | `src/main.rs` | Entry point: desktop app, `--server`, `--diagnose`, `--version` |
 | `src/lib.rs` | Module wiring and feature gates, icon assets, window options |
 | `src/app.rs` | Main window: sidebar, track list, player bar (GPUI view) |
-| `src/app/` | `settings.rs` (accounts, components), `visualizer.rs` + `backdrop.rs`, `lyrics.rs` (lyrics page, its own view), `progress.rs` (seek row, its own view), `thumbs.rs` (bounded thumbnail cache) |
+| `src/app/` | `settings.rs` (accounts, components), `visualizer.rs` + `backdrop.rs`, `lyrics.rs` (lyrics page, its own view), `soulseek.rs` ("Find on Soulseek" page, warning, account), `progress.rs` (seek row, its own view), `thumbs.rs` (bounded thumbnail cache) |
 | `src/model.rs` | Library model, `library.json` persistence, `Paths` (data and cache dirs) |
 | `src/sources/` | Link parsing; YouTube (InnerTube web API, oEmbed) and SoundCloud (api-v2) metadata, with yt-dlp as fallback |
 | `src/ytdlp.rs` | Managed components (yt-dlp master build, QuickJS), downloads through yt-dlp |
 | `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
 | `src/download.rs` | Shared state of one background download |
-| `src/storage.rs` | Music folder layout, removed-tracks cache |
+| `src/storage.rs` | Music folder layout, removed-tracks cache, originals of replaced tracks |
 | `src/cover.rs` | Cover art: fetch, disk cache, embedding into files |
 | `src/remux.rs` | Fragmented MP4 → plain MP4 without ffmpeg |
+| `src/soulseek.rs` | Soulseek client (desktop): login, search, one-file downloads over peer connections |
 | `src/sponsorblock.rs` | SponsorBlock segments (privacy-preserving hash-prefix lookups) |
 | `src/lyrics/` | Lyrics: artist/title guessing for uploads (`query.rs`), LRC and Lyricsfile parsing (`formats.rs`), LRCLIB and lrc.red lookups, disk cache |
 | `src/tray.rs`, `src/tray/` | Tray icon for playing in the background (ksni on Linux, Shell_NotifyIcon on Windows) |
@@ -149,7 +150,9 @@ These are product requirements, not style preferences:
   while the lyrics page is shown), GitHub (component downloads) and PyPI (the `yt-dlp-ejs`
   wheel, on platforms without a yt-dlp build), plus, if the user turns on Discord Rich
   Presence, the Discord app on the same computer (its local IPC socket; never Discord's
-  servers directly). A new destination needs the maintainer's explicit approval. (Genius
+  servers directly), and, if the user accepts the Soulseek warning and searches a track
+  there, the Soulseek server and the peers that answer (desktop; nothing is shared and
+  nothing listens for connections). A new destination needs the maintainer's explicit approval. (Genius
   sits behind a bot challenge and Musixmatch needs a session token, so neither is used for
   lyrics.)
 - Platform cookies go only to their own platform, and only when needed: the anonymous
@@ -171,11 +174,15 @@ Paths come from `directories::ProjectDirs` (`model::Paths`); on Linux:
 - `~/.cache/local-playlist/`: `covers/`, `removed/` (removed-tracks cache), `yt-dlp/`,
   `lyrics/` (one JSON file per track), `sponsorblock.json`, `soundcloud_client_id`.
 - Music: `<XDG music dir or ~/Music>/local-playlist/<Playlist>/<Platform>-<id>.<ext>`;
-  downloads in progress go to `.downloading/` inside the playlist folder.
+  downloads in progress go to `.downloading/` inside the playlist folder, and the own audio
+  of tracks replaced with a Soulseek file (`Track::soulseek`) to `.originals/`.
 
 The desktop app always uses these real locations, so don't run it against the user's library
 unless asked. The server takes `LOCAL_PLAYLIST_DATA` (use a temporary directory),
-`LOCAL_PLAYLIST_LISTEN` and `LOCAL_PLAYLIST_PASSWORD`.
+`LOCAL_PLAYLIST_LISTEN` and `LOCAL_PLAYLIST_PASSWORD`. Debug builds take
+`LOCAL_PLAYLIST_SOULSEEK_SERVER=<host:port>` to try Soulseek against a test server
+(`soulseek::tests` has a fake server and peer); don't test against the real network with
+throwaway accounts.
 
 ## Platform extraction
 
@@ -197,7 +204,11 @@ only).
   `v<version>` and the images `:<version>`, `:latest` and `:dev`. **Don't bump the version
   unless asked**: merging it publishes a release.
 - `build.yml` builds every download. Linux binaries are built on Ubuntu 24.04 and need
-  glibc 2.39, which is why the Docker runtime image is Debian trixie.
+  glibc 2.39, which is why the Docker runtime image is Debian trixie. The Android server
+  (`aarch64-linux-android`, for Termux) is built with the runner's NDK through
+  `.github/android-ndk-env.sh`; `ci.yml` builds it on every pull request. Android has no
+  yt-dlp or QuickJS builds: yt-dlp runs from source with Termux's Python, and the
+  JavaScript runtime comes from PATH (`ytdlp_asset` / `qjs_asset` return `None`).
 - Actions are pinned to full commit SHAs with the version in a comment
   (`uses: owner/action@<sha> # v1.2.3`); Dependabot updates them. Pin any new action the
   same way. Workflows get a read-only token; only the jobs that publish get write permissions.

@@ -4,6 +4,8 @@ mod backdrop;
 mod lyrics;
 mod progress;
 mod settings;
+#[cfg(feature = "desktop")]
+mod soulseek;
 mod thumbs;
 mod visualizer;
 
@@ -31,12 +33,15 @@ use crate::model::{Library, Paths, Platform, Playlist, RepeatMode, Track, format
 use crate::secrets::{Credentials, KeyStorage, SecretStore};
 use crate::sources::{self, Link, Resolved};
 use crate::ytdlp::{self, Component, State, Status, YtDlp};
-use gpui_kit::component::input::TextareaState;
+use gpui_kit::component::input::{Textarea, TextareaState};
 
 use crate::audio::Input as AudioInput;
 use crate::download::Download;
 use crate::sponsorblock::Segment;
 use crate::storage;
+
+/// Below this window width (phones) the layout is a single column.
+const COMPACT_WIDTH: f32 = 640.;
 
 #[derive(Clone)]
 struct NowPlaying {
@@ -57,6 +62,9 @@ struct FilterCache {
 enum View {
     Playlist,
     Settings,
+    /// "Find on Soulseek" for a track (desktop; `soulseek.rs`).
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    Soulseek,
 }
 
 /// What the playlist page shows: its tracks, or a page about what's playing.
@@ -127,6 +135,8 @@ pub struct LocalPlaylist {
 
     url_input: Entity<InputState>,
     import_input: Entity<InputState>,
+    /// Many links, one per line ("Add many links").
+    bulk_input: Entity<TextareaState>,
     name_input: Entity<InputState>,
     search_input: Entity<InputState>,
     seek: Entity<SliderState>,
@@ -140,9 +150,18 @@ pub struct LocalPlaylist {
 
     adding: bool,
     importing: bool,
+    /// The "Add many links" panel above the track list is open.
+    bulk_open: bool,
+    /// Links of a running "Add many links" resolved so far, and how many there are.
+    bulk_progress: Option<(usize, usize)>,
     /// The sidebar's "Import playlist" section is expanded.
     import_open: bool,
     view: View,
+    /// The window is phone-narrow ([`COMPACT_WIDTH`]): one column, with the
+    /// playlists on a screen of their own.
+    compact: bool,
+    /// Narrow window: the playlists screen is showing instead of the page.
+    drawer_open: bool,
     components: Option<Status>,
     /// Status text and progress of a running component install.
     installing: Option<Arc<Mutex<(String, Option<f32>)>>>,
@@ -203,6 +222,9 @@ pub struct LocalPlaylist {
     /// Track list thumbnails.
     thumbs: thumbs::Thumbs,
     _subscriptions: Vec<Subscription>,
+    /// "Find on Soulseek" (desktop).
+    #[cfg(feature = "desktop")]
+    slsk: soulseek::SoulseekUi,
     _ticker: Task<()>,
 }
 
@@ -211,6 +233,7 @@ pub struct LocalPlaylist {
 struct Inputs {
     url_input: Entity<InputState>,
     import_input: Entity<InputState>,
+    bulk_input: Entity<TextareaState>,
     name_input: Entity<InputState>,
     search_input: Entity<InputState>,
     server_password: Entity<InputState>,
@@ -224,6 +247,10 @@ impl Inputs {
                 InputState::new(window, cx).placeholder("Paste a YouTube / SoundCloud track or playlist link…")
             }),
             import_input: cx.new(|cx| InputState::new(window, cx).placeholder("Playlist, set or likes URL")),
+            bulk_input: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .placeholder("One YouTube or SoundCloud link per line (# starts a comment)")
+            }),
             name_input: cx.new(|cx| InputState::new(window, cx).placeholder("Playlist name")),
             search_input: cx.new(|cx| InputState::new(window, cx).placeholder("Search title or artist")),
             server_password: cx.new(|cx| InputState::new(window, cx).placeholder("Server password").masked(true)),
@@ -272,7 +299,7 @@ impl LocalPlaylist {
             cx.new(|_| visualizer::Visualizer::new(tap))
         };
 
-        let Inputs { url_input, import_input, name_input, search_input, server_password, cookie_input } =
+        let Inputs { url_input, import_input, bulk_input, name_input, search_input, server_password, cookie_input } =
             Inputs::new(window, cx);
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001).default_value(0.));
         let volume = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.01).default_value(library.settings.volume));
@@ -401,6 +428,7 @@ impl LocalPlaylist {
             last_skip: None,
             url_input,
             import_input,
+            bulk_input,
             name_input,
             search_input,
             seek,
@@ -410,9 +438,13 @@ impl LocalPlaylist {
             last_shown: (false, false),
             adding: false,
             importing: false,
+            bulk_open: false,
+            bulk_progress: None,
             // Open to start with only while there's nothing to play yet.
             import_open: selected.is_none(),
             view: View::Playlist,
+            compact: false,
+            drawer_open: false,
             components: None,
             installing: None,
             creds,
@@ -452,6 +484,8 @@ impl LocalPlaylist {
             accent_shown: None,
             accent_fade: None,
             thumbs: thumbs::Thumbs::default(),
+            #[cfg(feature = "desktop")]
+            slsk: Default::default(),
             _subscriptions: subscriptions,
             _ticker: ticker,
         };
@@ -532,6 +566,7 @@ impl LocalPlaylist {
         let inputs = Inputs::new(window, cx);
         self.url_input = inputs.url_input;
         self.import_input = inputs.import_input;
+        self.bulk_input = inputs.bulk_input;
         self.name_input = inputs.name_input;
         self.search_input = inputs.search_input;
         self.server_password = inputs.server_password;
@@ -553,6 +588,7 @@ impl LocalPlaylist {
         // Their textures went with the window; thumbnails load again when shown.
         self.stale_covers.clear();
         self.thumbs = thumbs::Thumbs::default();
+        self.slsk.inputs = None;
         crate::mem::trim();
     }
 
@@ -697,6 +733,7 @@ impl LocalPlaylist {
 
     fn select(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.view = View::Playlist;
+        self.drawer_open = false;
         self.selected = id;
         self.confirm_delete = false;
         let name = self.selected_playlist().map(|p| p.name.clone()).unwrap_or_default();
@@ -827,7 +864,192 @@ impl LocalPlaylist {
         .detach();
     }
 
+    /// "Add many links": the links typed or pasted into the panel's box.
+    fn add_from_bulk_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.bulk_input.read(cx).value().to_string();
+        self.add_link_list(&text, true, window, cx);
+    }
+
+    /// "Add many links": the links on the clipboard.
+    fn add_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bulk_progress.is_some() {
+            return;
+        }
+        // The async read: in the browser the plain one never has anything.
+        let read = cx.read_from_clipboard_async();
+        cx.spawn_in(window, async move |this, cx| {
+            let text = match read.await {
+                Ok(item) => item.and_then(|item| item.text()).unwrap_or_default(),
+                Err(e) => {
+                    let _ = this.update_in(cx, |_, window, cx| {
+                        let msg = format!("Couldn't read the clipboard: {e}");
+                        window.push_notification(Notification::warning(msg), cx);
+                    });
+                    return;
+                }
+            };
+            let _ = this.update_in(cx, |this, window, cx| this.add_link_list(&text, false, window, cx));
+        })
+        .detach();
+    }
+
+    /// "Add many links": the links in a text file (desktop; browsers can't
+    /// open a file picker for the app).
+    fn add_from_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bulk_progress.is_some() {
+            return;
+        }
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Add links".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match rx.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                // E.g. Linux without a file chooser portal.
+                Ok(Err(e)) => {
+                    let _ = this.update_in(cx, |_, window, cx| {
+                        let msg = format!("Couldn't open a file picker: {e:#}");
+                        window.push_notification(Notification::error(msg), cx);
+                    });
+                    None
+                }
+                _ => None,
+            };
+            let Some(path) = path else { return };
+            let read = cx.background_spawn(async move { read_link_file(&path) }).await;
+            let _ = this.update_in(cx, |this, window, cx| match read {
+                Ok(text) => this.add_link_list(&text, false, window, cx),
+                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Add every link in `text` (one per line) to the selected playlist, or
+    /// to a new one. Links are resolved one after another and their tracks
+    /// show up as they arrive; tracks the playlist has already are skipped.
+    fn add_link_list(&mut self, text: &str, clear_input: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bulk_progress.is_some() {
+            return;
+        }
+        let sources::LinkList { links, skipped } = sources::parse_link_list(text);
+        if links.is_empty() {
+            let msg = if skipped > 0 { "No YouTube or SoundCloud links found." } else { "There are no links to add." };
+            window.push_notification(Notification::warning(msg), cx);
+            return;
+        }
+        if self.selected.is_none() {
+            self.new_playlist(window, cx);
+        }
+        let Some(target) = self.selected.clone() else { return };
+        let total = links.len();
+        self.bulk_progress = Some((0, total));
+        cx.notify();
+
+        let (paths, ytdlp, creds) = (self.paths.clone(), self.ytdlp.clone(), self.creds.clone());
+        cx.spawn(async move |this, cx| {
+            let (mut added, mut present, mut failed) = (0, 0, 0);
+            let mut first_error = None;
+            for (i, link) in links.into_iter().enumerate() {
+                let as_collection = link.is_collection();
+                let (paths, ytdlp, creds) = (paths.clone(), ytdlp.clone(), creds.clone());
+                let task = cx.update(|cx| sources::resolve_task(cx, link, as_collection, paths, ytdlp, creds));
+                let result = task.await;
+                let go_on = this.update(cx, |this, cx| {
+                    this.bulk_progress = Some((i + 1, total));
+                    cx.notify();
+                    let Some(p) = this.library.playlist_mut(&target) else { return false };
+                    match result {
+                        Ok(resolved) => {
+                            for track in resolved.into_tracks() {
+                                let known = |t: &Track| t.platform == track.platform && t.source_id == track.source_id;
+                                if p.tracks.iter().any(known) {
+                                    present += 1;
+                                } else {
+                                    p.tracks.push(track);
+                                    added += 1;
+                                }
+                            }
+                            this.save_later();
+                            true
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            // The web UI lost its server session: the rest would fail too.
+                            #[cfg(target_family = "wasm")]
+                            let locked = e.to_string() == crate::web::api::UNAUTHORIZED;
+                            #[cfg(not(target_family = "wasm"))]
+                            let locked = false;
+                            first_error.get_or_insert(e);
+                            !locked
+                        }
+                    }
+                });
+                if !go_on.unwrap_or(false) {
+                    break;
+                }
+            }
+            Self::finish(&this, cx, move |this, mut window, cx| {
+                this.bulk_progress = None;
+                this.save();
+                crate::mem::trim(); // resolving parsed large JSON pages
+                if added == 0
+                    && present == 0
+                    && let Some(e) = first_error
+                {
+                    this.report_error(e, window, cx);
+                    cx.notify();
+                    return;
+                }
+                if clear_input
+                    && failed == 0
+                    && let Some(window) = window.as_deref_mut()
+                {
+                    this.bulk_input.update(cx, |i, cx| i.set_value("", window, cx));
+                    this.bulk_open = false;
+                }
+                let tracks = |n: usize| if n == 1 { "1 track".to_string() } else { format!("{n} tracks") };
+                let mut msg = match (added, present) {
+                    (0, present) => format!("Nothing new: {} already in the playlist", tracks(present)),
+                    (added, 0) => format!("Added {}", tracks(added)),
+                    (added, present) => format!("Added {}, {present} already in the playlist", tracks(added)),
+                };
+                if skipped > 0 {
+                    msg += &format!("; {skipped} line{} without a link", if skipped == 1 { "" } else { "s" });
+                }
+                let note = match first_error {
+                    Some(e) => {
+                        Notification::warning(format!("{msg}. {failed} of {total} links failed, the first with: {e:#}"))
+                    }
+                    None => Notification::success(msg),
+                };
+                this.note(window, note, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Show an error, or the server login screen if the server wants a password.
+    /// "Find on Soulseek" for a track (desktop).
+    fn find_on_soulseek(&mut self, playlist_id: &str, track_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "desktop")]
+        self.open_soulseek(playlist_id, track_id, window, cx);
+        #[cfg(not(feature = "desktop"))]
+        let _ = (playlist_id, track_id, window, cx);
+    }
+
+    /// Undo a track's Soulseek replacement (desktop).
+    fn restore_original(&mut self, playlist_id: &str, track_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "desktop")]
+        self.restore_original_audio(playlist_id, track_id, window, cx);
+        #[cfg(not(feature = "desktop"))]
+        let _ = (playlist_id, track_id, window, cx);
+    }
+
     fn report_error(&mut self, e: anyhow::Error, window: Option<&mut Window>, cx: &mut Context<Self>) {
         #[cfg(target_family = "wasm")]
         if e.to_string() == crate::web::api::UNAUTHORIZED {
@@ -1593,6 +1815,8 @@ impl LocalPlaylist {
     /// Five times a second, with or without a window: playback, downloads,
     /// saving.
     fn tick(&mut self, cx: &mut Context<Self>) {
+        #[cfg(feature = "desktop")]
+        self.soulseek_tick(cx);
         if self.installing.is_some() {
             cx.notify();
         }
@@ -1831,6 +2055,19 @@ fn cover_image(bytes: &[u8], max_px: u32, accent: bool) -> anyhow::Result<CoverI
 }
 
 /// Small xorshift shuffle; no need for cryptographic randomness.
+/// Read a list of links. Lists are small; a size limit keeps a wrongly picked
+/// file (a video, a disk image) from being read into memory.
+fn read_link_file(path: &std::path::Path) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+    const MAX: u64 = 4 << 20;
+    let size = std::fs::metadata(path).with_context(|| format!("Couldn't open {}", path.display()))?.len();
+    if size > MAX {
+        anyhow::bail!("{} is too big for a list of links ({} MB)", path.display(), size >> 20);
+    }
+    let bytes = std::fs::read(path).with_context(|| format!("Couldn't read {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn shuffle<T>(v: &mut [T]) {
     let mut seed = (crate::now_ms() * 1000.0) as u64 ^ 0x9E37_79B9_7F4A_7C15 | 1;
     for i in (1..v.len()).rev() {
@@ -1875,13 +2112,14 @@ impl LocalPlaylist {
         let import_open = self.import_open;
         let settings_open = self.view == View::Settings;
 
+        let compact = self.compact;
         v_flex()
-            .w(px(260.))
+            .when(compact, |d| d.w_full())
+            .when(!compact, |d| d.w(px(260.)).border_r_1())
             .h_full()
             .flex_none()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
-            .border_r_1()
             .border_color(theme.sidebar_border)
             .child(
                 h_flex()
@@ -1995,7 +2233,12 @@ impl LocalPlaylist {
                             .icon(IconName::Settings)
                             .label("Settings & accounts")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.view = if this.view == View::Settings { View::Playlist } else { View::Settings };
+                                this.view = if this.view == View::Settings && !this.drawer_open {
+                                    View::Playlist
+                                } else {
+                                    View::Settings
+                                };
+                                this.drawer_open = false;
                                 cx.notify();
                             })),
                     ),
@@ -2044,6 +2287,7 @@ impl LocalPlaylist {
                 };
                 let Some(p) = this.selected_playlist() else { return Vec::new() };
                 let now_id = this.now.as_ref().map(|n| n.track.id.clone());
+                let compact = this.compact;
                 let loading = this.is_buffering();
                 let paused = this.audio.as_ref().is_some_and(|a| a.is_paused());
                 let rows: Vec<(usize, Track)> = range
@@ -2078,24 +2322,32 @@ impl LocalPlaylist {
                             .id(ix)
                             .w_full()
                             .h(px(48.))
-                            .px_3()
-                            .gap_3()
+                            .when(compact, |d| d.px_1().gap_2())
+                            .when(!compact, |d| d.px_3().gap_3())
                             .rounded_lg()
                             .cursor_pointer()
                             .when(current, |d| d.bg(theme.primary.alpha(0.12)))
                             .hover(|d| d.bg(theme.list_hover))
-                            .child(div().w(px(28.)).flex_none().text_sm().text_color(theme.muted_foreground).child(
-                                if current && loading {
-                                    Icon::new(IconName::LoaderCircle)
-                                        .small()
-                                        .text_color(theme.primary)
-                                        .into_any_element()
-                                } else if current && !paused {
-                                    Icon::new(IconName::Volume2).small().text_color(theme.primary).into_any_element()
-                                } else {
-                                    (ix + 1).to_string().into_any_element()
-                                },
-                            ))
+                            .child(
+                                div()
+                                    .w(px(if compact { 20. } else { 28. }))
+                                    .flex_none()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .child(if current && loading {
+                                        Icon::new(IconName::LoaderCircle)
+                                            .small()
+                                            .text_color(theme.primary)
+                                            .into_any_element()
+                                    } else if current && !paused {
+                                        Icon::new(IconName::Volume2)
+                                            .small()
+                                            .text_color(theme.primary)
+                                            .into_any_element()
+                                    } else {
+                                        (ix + 1).to_string().into_any_element()
+                                    }),
+                            )
                             .child(thumbs::cover_tile(thumb, px(36.), &theme))
                             .child(
                                 v_flex()
@@ -2115,40 +2367,55 @@ impl LocalPlaylist {
                             )
                             .child(
                                 // Download status: progress, error, or on disk.
-                                div().w(px(36.)).flex_none().flex().justify_end().child(if let Some(p) = progress {
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child(format!("{:.0}%", p * 100.))
-                                        .into_any_element()
-                                } else if let Some(err) = this.download_errors.get(&target).cloned() {
-                                    div()
-                                        .id(("dl-err", ix))
-                                        .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
-                                        .tooltip(move |window, cx| {
-                                            gpui_kit::component::tooltip::Tooltip::new(format!(
-                                                "Download failed: {err}"
-                                            ))
-                                            .build(window, cx)
-                                        })
-                                        .into_any_element()
-                                } else if downloaded {
-                                    div()
-                                        .id(("dl-ok", ix))
-                                        .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
-                                        .tooltip(|window, cx| {
-                                            gpui_kit::component::tooltip::Tooltip::new("Downloaded — plays offline")
+                                div().w(px(if compact { 20. } else { 36. })).flex_none().flex().justify_end().child(
+                                    if let Some(p) = progress {
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(format!("{:.0}%", p * 100.))
+                                            .into_any_element()
+                                    } else if let Some(err) = this.download_errors.get(&target).cloned() {
+                                        div()
+                                            .id(("dl-err", ix))
+                                            .child(Icon::new(IconName::CircleAlert).small().text_color(theme.warning))
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(format!(
+                                                    "Download failed: {err}"
+                                                ))
                                                 .build(window, cx)
+                                            })
+                                            .into_any_element()
+                                    } else if downloaded {
+                                        div()
+                                            .id(("dl-ok", ix))
+                                            .child(Icon::new(IconName::CircleCheck).small().text_color(theme.success))
+                                            .tooltip(|window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new("Downloaded — plays offline")
+                                                    .build(window, cx)
+                                            })
+                                            .into_any_element()
+                                    } else {
+                                        div().into_any_element()
+                                    },
+                                ),
+                            )
+                            .child(match &t.soulseek {
+                                #[cfg(feature = "desktop")]
+                                Some(f) => {
+                                    let tip = format!("Plays {} from {} on Soulseek", f.quality, f.user);
+                                    soulseek::soulseek_badge(&theme)
+                                        .id(("slsk-badge", ix))
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                                         })
                                         .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                }),
-                            )
-                            .child(platform_badge(t.platform, &theme))
+                                }
+                                _ if compact => div().into_any_element(),
+                                _ => platform_badge(t.platform, &theme).into_any_element(),
+                            })
                             .child(
                                 div()
-                                    .w(px(56.))
+                                    .w(px(if compact { 36. } else { 56. }))
                                     .flex_none()
                                     .text_right()
                                     .text_sm()
@@ -2158,7 +2425,35 @@ impl LocalPlaylist {
                             .child(
                                 h_flex()
                                     .gap_0p5()
-                                    .when(!filtering, |d| {
+                                    .when(!crate::WEB, |d| {
+                                        let (pid, tid) = (playlist_id.clone(), t.id.clone());
+                                        d.child(
+                                            Button::new(("slsk", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Search)
+                                                .tooltip("Find on Soulseek")
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.find_on_soulseek(&pid, &tid, window, cx);
+                                                })),
+                                        )
+                                    })
+                                    .when(t.soulseek.is_some(), |d| {
+                                        let (pid, tid) = (playlist_id.clone(), t.id.clone());
+                                        d.child(
+                                            Button::new(("restore", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Undo2)
+                                                .tooltip("Restore original")
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.restore_original(&pid, &tid, window, cx);
+                                                })),
+                                        )
+                                    })
+                                    .when(!filtering && !compact, |d| {
                                         d.child(
                                             Button::new(("up", ix)).ghost().xsmall().icon(IconName::ArrowUp).on_click(
                                                 cx.listener(move |this, _, _, cx| {
@@ -2168,7 +2463,7 @@ impl LocalPlaylist {
                                             ),
                                         )
                                     })
-                                    .when(!filtering, |d| {
+                                    .when(!filtering && !compact, |d| {
                                         d.child(
                                             Button::new(("down", ix))
                                                 .ghost()
@@ -2269,14 +2564,19 @@ impl LocalPlaylist {
                             )
                             .when(count > 0, |d| {
                                 d.child(
-                                    div().w(px(260.)).flex_shrink(1.).child(
-                                        Input::new(&self.search_input)
-                                            .small()
-                                            .prefix(
-                                                Icon::new(IconName::Search).small().text_color(theme.muted_foreground),
-                                            )
-                                            .cleanable(true),
-                                    ),
+                                    div()
+                                        .when(self.compact, |d| d.flex_1().min_w(px(120.)))
+                                        .when(!self.compact, |d| d.w(px(260.)).flex_shrink(1.))
+                                        .child(
+                                            Input::new(&self.search_input)
+                                                .small()
+                                                .prefix(
+                                                    Icon::new(IconName::Search)
+                                                        .small()
+                                                        .text_color(theme.muted_foreground),
+                                                )
+                                                .cleanable(true),
+                                        ),
                                 )
                             }),
                     )
@@ -2296,8 +2596,20 @@ impl LocalPlaylist {
                                     .label("Add")
                                     .loading(self.adding)
                                     .on_click(cx.listener(|this, _, window, cx| this.add_from_input(window, cx))),
+                            )
+                            .child(
+                                Button::new("bulk-toggle")
+                                    .icon(IconName::ListMusic)
+                                    .when(self.bulk_open, |b| b.primary())
+                                    .when(!self.bulk_open, |b| b.ghost())
+                                    .tooltip("Add many links (a list, the clipboard or a text file)")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.bulk_open = !this.bulk_open;
+                                        cx.notify();
+                                    })),
                             ),
-                    ),
+                    )
+                    .when(self.bulk_open, |d| d.child(self.render_bulk_add(&theme, cx))),
             )
             .child(
                 div()
@@ -2337,6 +2649,60 @@ impl LocalPlaylist {
                                 .child(Scrollbar::vertical(&self.list_scroll)),
                         )
                     }),
+            )
+            .into_any_element()
+    }
+
+    /// "Add many links": a box for a list of links, or take them from the
+    /// clipboard or a text file.
+    fn render_bulk_add(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.bulk_progress.is_some();
+        let label = match self.bulk_progress {
+            Some((done, total)) => format!("Adding {done} of {total}…"),
+            None => "Add links".to_string(),
+        };
+        v_flex()
+            .gap_2()
+            .child(Textarea::new(&self.bulk_input).h(px(110.)).disabled(busy))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        Button::new("bulk-add")
+                            .small()
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(label)
+                            .loading(busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.add_from_bulk_input(window, cx))),
+                    )
+                    .child(
+                        Button::new("bulk-clipboard")
+                            .small()
+                            .icon(IconName::Copy)
+                            .label("From clipboard")
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.add_from_clipboard(window, cx))),
+                    )
+                    .when(!crate::WEB, |d| {
+                        d.child(
+                            Button::new("bulk-file")
+                                .small()
+                                .icon(IconName::FileText)
+                                .label("From file…")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, window, cx| this.add_from_file(window, cx))),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("Tracks and playlists are added here; ones already in the playlist are skipped."),
+                    ),
             )
             .into_any_element()
     }
@@ -2441,7 +2807,7 @@ impl LocalPlaylist {
             .into_any_element()
     }
 
-    fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         // The bar touches the window's bottom corners, which may be rounded.
         let radii = gpui_kit::component::window_corner_radii(window, cx);
@@ -2467,22 +2833,100 @@ impl LocalPlaylist {
         // The full cover once loaded; the list thumbnail until then.
         let now_track = self.now.as_ref().map(|n| n.track.clone());
         let cover = self.now_cover.clone().or_else(|| now_track.and_then(|t| self.thumb(&t, cx)));
+        let compact = self.compact;
         let info = h_flex()
             .gap_3()
             .min_w_0()
-            .when(self.now.is_some(), |d| d.child(thumbs::cover_tile(cover, px(52.), &theme)))
+            .when(self.now.is_some(), |d| {
+                d.child(thumbs::cover_tile(cover, px(if compact { 40. } else { 52. }), &theme))
+            })
             .child(info.min_w_0().flex_1());
 
-        h_flex()
+        let shuffle = Button::new("shuffle")
+            .ghost()
+            .small()
+            .icon(IconName::Shuffle)
+            .toggled(settings.shuffle)
+            .tooltip(if settings.shuffle { "Shuffle: on" } else { "Shuffle: off" })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.library.settings.shuffle = !this.library.settings.shuffle;
+                if let Some(id) = this.now.as_ref().map(|n| n.track.id.clone()) {
+                    this.reshuffle(&id);
+                }
+                this.save();
+                cx.notify();
+            }));
+        let prev = Button::new("prev")
+            .ghost()
+            .icon(IconName::SkipBack)
+            .on_click(cx.listener(|this, _, _, cx| this.previous(cx)));
+        let play = Button::new("play")
+            .primary()
+            .rounded(gpui_kit::component::button::ButtonRounded::Large)
+            .icon(if playing { IconName::Pause } else { IconName::Play })
+            .loading(loading.is_some())
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx)));
+        let next = Button::new("next")
+            .ghost()
+            .icon(IconName::SkipForward)
+            .on_click(cx.listener(|this, _, _, cx| this.skip(1, false, cx)));
+        let repeat = Button::new("repeat")
+            .ghost()
+            .small()
+            .icon(if settings.repeat == RepeatMode::One { IconName::Repeat1 } else { IconName::Repeat })
+            .toggled(settings.repeat != RepeatMode::Off)
+            .tooltip(match settings.repeat {
+                RepeatMode::Off => "Repeat: off",
+                RepeatMode::All => "Repeat: playlist",
+                RepeatMode::One => "Repeat: track",
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.library.settings.repeat = this.library.settings.repeat.next();
+                this.save();
+                cx.notify();
+            }));
+        let lyrics = Button::new("lyrics")
+            .ghost()
+            .small()
+            .icon(IconName::MicVocal)
+            .toggled(self.panel == Panel::Lyrics && self.view == View::Playlist)
+            .tooltip("Lyrics")
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Lyrics, cx)));
+        let visualizer = Button::new("visualizer")
+            .ghost()
+            .small()
+            .icon(IconName::AudioLines)
+            .toggled(self.panel == Panel::Visualizer && self.view == View::Playlist)
+            .tooltip("Visualizer")
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Visualizer, cx)));
+        // Its own view, so the clock ticking redraws just this row.
+        let progress = self.progress.clone();
+
+        let bar = |d: Div| {
+            d.flex_none()
+                .border_t_1()
+                .border_color(theme.border)
+                .bg(theme.sidebar)
+                .rounded_bl(radii.bottom_left)
+                .rounded_br(radii.bottom_right)
+        };
+        if compact {
+            // Phones: what's playing and the main buttons, the seek row, then
+            // the toggles. Volume is left to the device's own buttons.
+            return bar(v_flex())
+                .px_3()
+                .pt_2()
+                .pb_1()
+                .gap_1()
+                .child(h_flex().gap_1().child(div().flex_1().min_w_0().child(info)).child(prev).child(play).child(next))
+                .child(div().w_full().child(progress))
+                .child(h_flex().justify_around().child(shuffle).child(repeat).child(lyrics).child(visualizer))
+                .into_any_element();
+        }
+        bar(h_flex())
             .h(px(84.))
-            .flex_none()
             .px_4()
             .gap_4()
-            .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.sidebar)
-            .rounded_bl(radii.bottom_left)
-            .rounded_br(radii.bottom_right)
             .child(div().w(px(260.)).flex_none().child(info))
             .child(
                 v_flex()
@@ -2490,93 +2934,16 @@ impl LocalPlaylist {
                     .min_w_0()
                     .gap_1()
                     .items_center()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("shuffle")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Shuffle)
-                                    .toggled(settings.shuffle)
-                                    .tooltip(if settings.shuffle { "Shuffle: on" } else { "Shuffle: off" })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.library.settings.shuffle = !this.library.settings.shuffle;
-                                        if let Some(id) = this.now.as_ref().map(|n| n.track.id.clone()) {
-                                            this.reshuffle(&id);
-                                        }
-                                        this.save();
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("prev")
-                                    .ghost()
-                                    .icon(IconName::SkipBack)
-                                    .on_click(cx.listener(|this, _, _, cx| this.previous(cx))),
-                            )
-                            .child(
-                                Button::new("play")
-                                    .primary()
-                                    .rounded(gpui_kit::component::button::ButtonRounded::Large)
-                                    .icon(if playing { IconName::Pause } else { IconName::Play })
-                                    .loading(loading.is_some())
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
-                            )
-                            .child(
-                                Button::new("next")
-                                    .ghost()
-                                    .icon(IconName::SkipForward)
-                                    .on_click(cx.listener(|this, _, _, cx| this.skip(1, false, cx))),
-                            )
-                            .child(
-                                Button::new("repeat")
-                                    .ghost()
-                                    .small()
-                                    .icon(if settings.repeat == RepeatMode::One {
-                                        IconName::Repeat1
-                                    } else {
-                                        IconName::Repeat
-                                    })
-                                    .toggled(settings.repeat != RepeatMode::Off)
-                                    .tooltip(match settings.repeat {
-                                        RepeatMode::Off => "Repeat: off",
-                                        RepeatMode::All => "Repeat: playlist",
-                                        RepeatMode::One => "Repeat: track",
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.library.settings.repeat = this.library.settings.repeat.next();
-                                        this.save();
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    // Its own view, so the clock ticking redraws just this row.
-                    .child(div().w_full().max_w(px(640.)).child(self.progress.clone())),
+                    .child(h_flex().gap_2().child(shuffle).child(prev).child(play).child(next).child(repeat))
+                    .child(div().w_full().max_w(px(640.)).child(progress)),
             )
             .child(
                 h_flex()
                     .w(px(244.))
                     .flex_none()
                     .gap_2()
-                    .child(
-                        Button::new("lyrics")
-                            .ghost()
-                            .small()
-                            .icon(IconName::MicVocal)
-                            .toggled(self.panel == Panel::Lyrics && self.view == View::Playlist)
-                            .tooltip("Lyrics")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Lyrics, cx))),
-                    )
-                    .child(
-                        Button::new("visualizer")
-                            .ghost()
-                            .small()
-                            .icon(IconName::AudioLines)
-                            .toggled(self.panel == Panel::Visualizer && self.view == View::Playlist)
-                            .tooltip("Visualizer")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Visualizer, cx))),
-                    )
+                    .child(lyrics)
+                    .child(visualizer)
                     .child(
                         Icon::new(if settings.volume <= 0.001 { IconName::VolumeX } else { IconName::Volume2 })
                             .small()
@@ -2584,30 +2951,26 @@ impl LocalPlaylist {
                     )
                     .child(div().flex_1().child(Slider::new(&self.volume))),
             )
+            .into_any_element()
     }
 }
 
 fn platform_badge(platform: Platform, theme: &gpui_kit::component::Theme) -> impl IntoElement {
-    // Tonal chip in the platform's hue, tuned for light/dark surfaces.
     let hue = match platform {
         Platform::YouTube => 0. / 360.,
         Platform::SoundCloud => 22. / 360.,
     };
+    badge(platform.label(), hue, theme)
+}
+
+/// Tonal chip in a hue, tuned for light/dark surfaces.
+fn badge(label: &'static str, hue: f32, theme: &gpui_kit::component::Theme) -> Div {
     let (fg, bg) = if theme.is_dark() {
         (hsla(hue, 0.9, 0.78, 1.), hsla(hue, 0.6, 0.5, 0.18))
     } else {
         (hsla(hue, 0.75, 0.38, 1.), hsla(hue, 0.9, 0.55, 0.12))
     };
-    div()
-        .flex_none()
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .text_xs()
-        .font_medium()
-        .text_color(fg)
-        .bg(bg)
-        .child(platform.label())
+    div().flex_none().px_2().py_0p5().rounded_full().text_xs().font_medium().text_color(fg).bg(bg).child(label)
 }
 
 impl Render for LocalPlaylist {
@@ -2615,6 +2978,11 @@ impl Render for LocalPlaylist {
         if crate::WEB && self.server_locked {
             return self.render_server_login(cx).into_any_element();
         }
+        self.compact = window.viewport_size().width < px(COMPACT_WIDTH);
+        if !self.compact {
+            self.drawer_open = false;
+        }
+        let page = if self.compact && self.drawer_open { None } else { Some(self.render_page(window, cx)) };
         let theme = cx.theme();
         let radii = gpui_kit::component::window_corner_radii(window, cx);
         v_flex()
@@ -2627,21 +2995,11 @@ impl Render for LocalPlaylist {
             .rounded_br(radii.bottom_right)
             .when(Self::has_title_bar(window), |d| d.child(self.render_title_bar(cx)))
             .child(
-                h_flex().flex_1().min_h_0().child(self.render_sidebar(window, cx)).child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
-                        .child(div().flex_1().min_h_0().child(match self.view {
-                            View::Playlist => match self.panel {
-                                Panel::Visualizer => self.render_visualizer(cx).into_any_element(),
-                                Panel::Lyrics => self.lyrics.clone().into_any_element(),
-                                Panel::Tracks => self.render_main(window, cx).into_any_element(),
-                            },
-                            View::Settings => self.render_settings(window, cx).into_any_element(),
-                        })),
-                ),
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .when(!self.compact || self.drawer_open, |d| d.child(self.render_sidebar(window, cx)))
+                    .children(page),
             )
             .child(self.render_player(window, cx))
             .into_any_element()
@@ -2649,6 +3007,55 @@ impl Render for LocalPlaylist {
 }
 
 impl LocalPlaylist {
+    /// The page beside the sidebar (on phones, under a bar that opens the playlists).
+    fn render_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let content = match self.view {
+            View::Playlist => match self.panel {
+                Panel::Visualizer => self.render_visualizer(cx).into_any_element(),
+                Panel::Lyrics => self.lyrics.clone().into_any_element(),
+                Panel::Tracks => self.render_main(window, cx).into_any_element(),
+            },
+            View::Settings => self.render_settings(window, cx).into_any_element(),
+            #[cfg(feature = "desktop")]
+            View::Soulseek => self.render_soulseek(window, cx),
+            #[cfg(not(feature = "desktop"))]
+            View::Soulseek => div().into_any_element(),
+        };
+        let theme = cx.theme();
+        let title: SharedString = match self.view {
+            View::Settings => "Settings".into(),
+            View::Soulseek => "Find on Soulseek".into(),
+            View::Playlist => match self.panel {
+                Panel::Lyrics => "Lyrics".into(),
+                Panel::Visualizer => "Now playing".into(),
+                Panel::Tracks => "Playlists".into(),
+            },
+        };
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .when(self.compact, |d| {
+                d.child(
+                    h_flex().flex_none().px_2().py_1().gap_1().border_b_1().border_color(theme.border).child(
+                        Button::new("open-drawer")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Menu)
+                            .label(title)
+                            .tooltip("Playlists, import and settings")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.drawer_open = true;
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
+            .when_some(self.render_setup_banner(cx), |d, banner| d.child(banner))
+            .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
+    }
+
     /// Whether the app draws its own title bar: always on the desktop, except on
     /// Linux when the window manager kept server-side decorations (X11 without a
     /// compositor, some tiling compositors) and so already draws one.

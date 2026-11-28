@@ -126,7 +126,7 @@ impl LocalPlaylist {
 
     // -------------------------------------------------------------- accounts
 
-    fn persist_creds(&mut self) {
+    pub(super) fn persist_creds(&mut self) {
         match SecretStore::new(&self.paths).save(&self.creds) {
             Ok(storage) => self.key_storage = Some(storage),
             Err(e) => self.notify_error(format!("Could not save login: {e:#}")),
@@ -245,17 +245,36 @@ impl LocalPlaylist {
             }
         };
 
-        Some(
+        let buttons = (self.installing.is_none() && !missing.is_empty()).then(|| {
             h_flex()
+                .gap_2()
                 .flex_none()
-                .gap_3()
-                .px_4()
-                .py_3()
-                .border_b_1()
-                .border_color(theme.border)
-                .bg(theme.warning.alpha(0.12))
-                .child(Icon::new(IconName::Download).text_color(theme.warning))
-                .child(v_flex().flex_1().min_w_0().gap_1().child(div().text_sm().child(text)).when_some(
+                .child(
+                    Button::new("setup-download")
+                        .primary()
+                        .small()
+                        .icon(IconName::Download)
+                        .label("Download")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let missing = this.ytdlp.missing_managed();
+                            this.install_components(missing, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("setup-system")
+                        .ghost()
+                        .small()
+                        .label("Use system tools")
+                        .tooltip("Use yt-dlp and a JavaScript runtime (deno/node/bun/qjs) installed on this computer")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_source(Component::YtDlp, Source::System, window, cx);
+                            this.set_source(Component::JsRuntime, Source::System, window, cx);
+                        })),
+                )
+        });
+        let message =
+            h_flex().flex_1().min_w_0().gap_3().child(Icon::new(IconName::Download).text_color(theme.warning)).child(
+                v_flex().flex_1().min_w_0().gap_1().child(div().text_sm().child(text)).when_some(
                     installing.and_then(|(_, f)| f),
                     |d, f| {
                         d.child(
@@ -267,38 +286,32 @@ impl LocalPlaylist {
                                 .child(div().h_full().rounded_full().bg(theme.primary).w(relative(f.clamp(0., 1.)))),
                         )
                     },
-                ))
-                .when(self.installing.is_none() && !missing.is_empty(), |d| {
-                    d.child(
-                        Button::new("setup-download")
-                            .primary()
-                            .small()
-                            .icon(IconName::Download)
-                            .label("Download")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let missing = this.ytdlp.missing_managed();
-                                this.install_components(missing, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("setup-system")
-                            .ghost()
-                            .small()
-                            .label("Use system tools")
-                            .tooltip(
-                                "Use yt-dlp and a JavaScript runtime (deno/node/bun/qjs) installed on this computer",
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.set_source(Component::YtDlp, Source::System, window, cx);
-                                this.set_source(Component::JsRuntime, Source::System, window, cx);
-                            })),
-                    )
-                })
+                ),
+            );
+        // Narrow windows: the buttons under the message, not squeezing it.
+        let banner = if self.compact { v_flex().gap_2() } else { h_flex().gap_3() };
+        Some(
+            banner
+                .flex_none()
+                .px_4()
+                .py_3()
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.warning.alpha(0.12))
+                .child(message)
+                .children(buttons)
                 .into_any_element(),
         )
     }
 
-    pub(super) fn render_settings(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "desktop")]
+        let soulseek_account = Some(self.render_soulseek_account(window, cx));
+        #[cfg(not(feature = "desktop"))]
+        let soulseek_account: Option<AnyElement> = {
+            let _ = window;
+            None
+        };
         let theme = cx.theme().clone();
         let section = |title: &'static str, desc: SharedString| {
             v_flex()
@@ -330,16 +343,19 @@ impl LocalPlaylist {
                 .child(
                     h_flex()
                         .gap_3()
+                        // Narrow windows: the buttons move to a line of their own.
+                        .flex_wrap()
                         .child(platform_badge(p, &theme))
                         .child(
                             div()
                                 .flex_1()
+                                .min_w(px(100.))
                                 .text_sm()
                                 .text_color(if logged_in { theme.success } else { theme.muted_foreground })
                                 .child(if logged_in { "Logged in" } else { "Not logged in" }),
                         )
                         .when(!logged_in, |d| {
-                            d.child(
+                            d.child(h_flex().gap_2().child(
                                 Button::new(SharedString::from(format!("paste-{}", p.short())))
                                     .ghost()
                                     .small()
@@ -358,7 +374,7 @@ impl LocalPlaylist {
                                     .label(if busy { "Waiting for login…" } else { "Log in" })
                                     .loading(busy)
                                     .on_click(cx.listener(move |this, _, _, cx| this.login(p, cx))),
-                            )
+                            ))
                         })
                         .when(logged_in, |d| {
                             d.child(
@@ -553,9 +569,11 @@ impl LocalPlaylist {
                 v_flex()
                     .w_full()
                     .max_w(px(760.))
-                    .p_6()
+                    .when(self.compact, |d| d.p_4())
+                    .when(!self.compact, |d| d.p_6())
                     .gap_6()
-                    .child(
+                    // Narrow windows name the page in the bar above already.
+                    .when(!self.compact, |d| d.child(
                         h_flex()
                             .justify_between()
                             .child(div().text_2xl().font_semibold().child("Settings"))
@@ -568,7 +586,7 @@ impl LocalPlaylist {
                                         cx.notify();
                                     })),
                             ),
-                    )
+                    ))
                     .when(crate::WEB, |d| {
                         d.child(
                             v_flex()
@@ -602,6 +620,7 @@ impl LocalPlaylist {
                                 "Optional. Needed only for private playlists, Liked videos and your likes. Logging in opens the platform's own sign-in page in a private window.".into(),
                             ))
                             .children(accounts)
+                            .children(soulseek_account)
                             .child(div().text_xs().text_color(theme.muted_foreground).child(storage_note)),
                     ))
                     .when(!crate::WEB, |d| d.child(
@@ -995,6 +1014,7 @@ impl LocalPlaylist {
                     .child(
                         h_flex()
                             .gap_2()
+                            .flex_wrap()
                             .child(div().text_sm().text_color(theme.muted_foreground).child("Limit:"))
                             .children([512u64, 1024, 2048, 5120, 10240].map(|mb| {
                                 let label = if mb < 1024 { format!("{mb} MB") } else { format!("{} GB", mb / 1024) };

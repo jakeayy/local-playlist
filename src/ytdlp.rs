@@ -10,7 +10,8 @@
 //! * **JavaScript runtime**: QuickJS-ng (~2.5 MB), which yt-dlp uses to solve
 //!   YouTube's challenges.
 //!
-//! Either component can instead come from the system PATH.
+//! Either component can instead come from the system PATH. Where there is no
+//! QuickJS build (Android, under Termux), the JavaScript runtime always does.
 
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -115,6 +116,7 @@ pub struct YtDlp {
 
 impl YtDlp {
     pub fn new(paths: &Paths, ytdlp_source: Source, js_source: Source) -> Self {
+        let js_source = if qjs_asset().is_none() { Source::System } else { js_source };
         Self {
             root: paths.data.join("components"),
             yt_cache: paths.cache.join("yt-dlp"),

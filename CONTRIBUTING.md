@@ -63,6 +63,16 @@ cargo build --release --no-default-features --features server
 
 The Docker image can also be built from source: `docker build -t local-playlist .`
 
+The Android server (for Termux) is the same build for `aarch64-linux-android`, with the
+[Android NDK](https://developer.android.com/ndk/downloads) (r26 or newer) as linker:
+
+```sh
+rustup target add aarch64-linux-android
+export ANDROID_NDK_LATEST_HOME=/path/to/android-ndk
+eval "$(.github/android-ndk-env.sh | sed 's/^/export /')"
+cargo build --release --target aarch64-linux-android --no-default-features --features server
+```
+
 Cargo features: `desktop` (GPUI app, audio, webview login, keyring; implies `ui`) is on
 by default. `server` adds `--server`; it embeds the web UI (~6 MB), so it's opt-in for
 desktop builds. The browser build uses only `ui`.
@@ -96,11 +106,13 @@ Where things live:
 | `src/web/` | Browser build: entry point, server API client, `<audio>` playback, stand-ins |
 | `src/audio.rs` | Streaming playback engine (decoder thread, buffering, seeking) |
 | `src/download.rs` | Shared download state |
-| `src/storage.rs` | Music folder layout, removed-tracks cache |
+| `src/storage.rs` | Music folder layout, removed-tracks cache, replaced tracks' originals |
 | `src/lyrics/` | Lyrics lookup (LRCLIB, lrc.red), artist/title guessing, LRC and Lyricsfile parsing |
 | `src/app/lyrics.rs` | The lyrics page (karaoke highlighting) |
 | `src/tray.rs` | Tray icon for playing in the background (Linux: ksni, Windows: Shell_NotifyIcon) |
 | `src/discord.rs` | Discord Rich Presence over the Discord app's local IPC (images: `docs/discord/`; `draws_accent_icons` redraws the accent ones) |
+| `src/soulseek.rs` | Soulseek client: login, search, downloading one file from a peer |
+| `src/app/soulseek.rs` | "Find on Soulseek" page, its warning and the Soulseek account in Settings |
 
 [AGENTS.md](AGENTS.md) has a more detailed map and the project's conventions.
 

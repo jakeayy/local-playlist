@@ -20,6 +20,8 @@ pub mod mem;
 pub mod model;
 #[cfg(feature = "desktop")]
 pub mod remux;
+#[cfg(feature = "desktop")]
+pub mod soulseek;
 pub mod sources;
 #[cfg(feature = "ui")]
 pub mod spectrum;
