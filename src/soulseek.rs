@@ -938,7 +938,8 @@ mod tests {
         stream.write_all(&w.frame(code)).unwrap();
     }
 
-    fn fake_network() -> FakeNetwork {
+    /// `password` is the only one the fake server accepts.
+    fn fake_network(password: String) -> FakeNetwork {
         let file: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let peer = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -948,39 +949,42 @@ mod tests {
 
         let conn = client_conn.clone();
         std::thread::spawn(move || {
-            let (mut s, _) = server.accept().unwrap();
-            *conn.lock().unwrap() = Some(s.try_clone().unwrap());
-            loop {
-                let Ok((code, body)) = read_message(&mut s, MAX_SERVER_MESSAGE) else { return };
-                let mut r = Reader::new(&body);
-                match code {
-                    LOGIN => {
-                        let (user, pass) = (r.string().unwrap(), r.string().unwrap());
-                        let mut w = Writer::default();
-                        if pass == "secret" {
-                            w.u8(1).str(b"hi").u32(0x7f00_0001).str(b"x").u8(0);
-                        } else {
-                            w.u8(0).str(b"INVALIDPASS");
+            // One client connection at a time (a failed login closes its own).
+            for s in server.incoming() {
+                let mut s = s.unwrap();
+                *conn.lock().unwrap() = Some(s.try_clone().unwrap());
+                loop {
+                    let Ok((code, body)) = read_message(&mut s, MAX_SERVER_MESSAGE) else { break };
+                    let mut r = Reader::new(&body);
+                    match code {
+                        LOGIN => {
+                            let (user, pass) = (r.string().unwrap(), r.string().unwrap());
+                            let mut w = Writer::default();
+                            if pass == password {
+                                w.u8(1).str(b"hi").u32(0x7f00_0001).str(b"x").u8(0);
+                            } else {
+                                w.u8(0).str(b"INVALIDPASS");
+                            }
+                            let _ = user;
+                            send(&mut s, LOGIN, &w);
                         }
-                        let _ = user;
-                        send(&mut s, LOGIN, &w);
+                        FILE_SEARCH => {
+                            // Alice can't reach us: the server relays her request.
+                            let token = r.u32().unwrap();
+                            assert_eq!(r.string().unwrap(), "artist song");
+                            PEER_SEARCH_TOKEN.store(token as usize, Ordering::Relaxed);
+                            let mut w = Writer::default();
+                            w.str(b"alice").str(b"P").u32(0x7f00_0001).u32(peer_port as u32).u32(111).u8(0);
+                            send(&mut s, CONNECT_TO_PEER, &w);
+                        }
+                        GET_PEER_ADDRESS => {
+                            let user = r.string().unwrap();
+                            let mut w = Writer::default();
+                            w.str(user.as_bytes()).u32(0x7f00_0001).u32(peer_port as u32);
+                            send(&mut s, GET_PEER_ADDRESS, &w);
+                        }
+                        _ => {}
                     }
-                    FILE_SEARCH => {
-                        // Alice can't reach us: the server relays her request.
-                        let token = r.u32().unwrap();
-                        assert_eq!(r.string().unwrap(), "artist song");
-                        PEER_SEARCH_TOKEN.store(token as usize, Ordering::Relaxed);
-                        let mut w = Writer::default();
-                        w.str(b"alice").str(b"P").u32(0x7f00_0001).u32(peer_port as u32).u32(111).u8(0);
-                        send(&mut s, CONNECT_TO_PEER, &w);
-                    }
-                    GET_PEER_ADDRESS => {
-                        let user = r.string().unwrap();
-                        let mut w = Writer::default();
-                        w.str(user.as_bytes()).u32(0x7f00_0001).u32(peer_port as u32);
-                        send(&mut s, GET_PEER_ADDRESS, &w);
-                    }
-                    _ => {}
                 }
             }
         });
@@ -1075,11 +1079,15 @@ mod tests {
 
     #[test]
     fn logs_in_searches_and_downloads() {
-        let net = fake_network();
+        // Made up per run: no password is written in the code.
+        let password = random_u32().to_string();
+        let net = fake_network(password.clone());
         // SAFETY: the only test that reads this variable.
         unsafe { std::env::set_var("LOCAL_PLAYLIST_SOULSEEK_SERVER", net.server.to_string()) };
 
-        let client = Client::login("me", "secret").unwrap();
+        let wrong = format!("{password}x");
+        assert!(Client::login("me", &wrong).is_err_and(|e| e.to_string().contains("Wrong password")));
+        let client = Client::login("me", &password).unwrap();
         client.search("Artist - Song").unwrap();
         wait_until("results", || client.result_count().0 == 2);
         let results = client.results();
